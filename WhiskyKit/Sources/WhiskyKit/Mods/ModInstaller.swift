@@ -127,7 +127,10 @@ public enum ModInstaller {
         rule: ModInstallRule, gameExecutable: URL
     ) async throws -> ModInstallResult {
         var gameFolder = gameExecutable.deletingLastPathComponent()
-        if rule.copyGame {
+        if rule.ownFolder {
+            gameFolder = modFolder(for: name, game: gameFolder)
+            try FileManager.default.createDirectory(at: gameFolder, withIntermediateDirectories: true)
+        } else if rule.copyGame {
             gameFolder = try copyGameFolder(gameFolder, for: name)
         }
         let target = try resolve(rule.subpath, in: gameFolder)
@@ -158,11 +161,17 @@ public enum ModInstaller {
         logger.info(
             "Installed \(name, privacy: .public) (\(written.count) files) into \(gameFolder.path, privacy: .public)"
         )
-        return ModInstallResult(
-            gameFolder: gameFolder,
-            executable: gameFolder.appending(path: gameExecutable.lastPathComponent),
-            mod: mod
-        )
+        // A mod in its own folder runs through the game's own executable.
+        let executable = rule.ownFolder
+            ? gameExecutable : gameFolder.appending(path: gameExecutable.lastPathComponent)
+        return ModInstallResult(gameFolder: gameFolder, executable: executable, mod: mod)
+    }
+
+    /// Where a mod with its own folder lives: `<Game> Mods/<Mod>` next to the game.
+    public static func modFolder(for modName: String, game gameFolder: URL) -> URL {
+        gameFolder.deletingLastPathComponent()
+            .appending(path: "\(gameFolder.lastPathComponent) Mods")
+            .appending(path: safeName(modName))
     }
 
     /// Copies the game to a sibling folder named after the mod, unless that copy exists already.

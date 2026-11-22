@@ -34,6 +34,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     @State private var pendingPlan: PendingPlan?
     @State private var message: String?
     @State private var dropTargeted = false
+    @State private var activeMod: URL?
 
     struct PendingPlan: Identifiable {
         let id = UUID()
@@ -49,6 +50,17 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         Section(String(localized: "Mods"), isExpanded: $isExpanded) {
             ForEach(presets) { preset in
                 presetRow(preset)
+            }
+
+            if let active = activeMod {
+                HStack {
+                    Text("Mods on: \(active.lastPathComponent)").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Turn Off Mods") { turnOffMods() }
+                    if let preset = presets.first(where: { $0.launch == .steam }) {
+                        Button("Play Without Mods") { play(preset, modFolder: nil) }
+                    }
+                }
             }
 
             ForEach(installed.filter { mod in !presets.contains { $0.repo == mod.repo } }) { mod in
@@ -116,6 +128,11 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
             if let current {
                 if let release, release.tagName != current.mod.version {
                     Button("Update") { installPreset(preset) }.disabled(busy != nil)
+                }
+                if current.folder != gameFolder, preset.install.ownFolder {
+                    Button("Play") { play(preset, modFolder: current.folder) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(busy != nil)
                 }
                 Button("Remove", role: .destructive) { remove(current.mod, in: current.folder) }
             } else {
@@ -193,7 +210,11 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     /// A preset may live in a copy of the game folder rather than this one.
     private func installedPreset(_ preset: ModPreset) -> (mod: InstalledMod, folder: URL)? {
         var folders = [gameFolder]
-        if preset.install.copyGame, let copy = try? copyFolder(for: preset.name) { folders.insert(copy, at: 0) }
+        if preset.install.ownFolder {
+            folders.insert(ModInstaller.modFolder(for: preset.name, game: gameFolder), at: 0)
+        } else if preset.install.copyGame, let copy = try? copyFolder(for: preset.name) {
+            folders.insert(copy, at: 0)
+        }
         for folder in folders {
             if let mod = ModInstaller.installedMods(in: folder).first(where: { $0.repo == preset.repo }) {
                 return (mod, folder)
@@ -209,6 +230,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
 
     private func refresh() async {
         installed = ModInstaller.installedMods(in: gameFolder)
+        activeMod = ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: program.bottle.url)
         for preset in presets where latestVersions[preset.repo] == nil {
             latestVersions[preset.repo] = try? await GitHubReleases.latestRelease(repo: preset.repo)
         }
@@ -235,6 +257,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                 if let plan, plan.confident, plan.asset == asset {
                     rule = plan.rule
                     rule.copyGame = rule.copyGame || preset.install.copyGame
+                    rule.ownFolder = preset.install.ownFolder
                 }
                 install(
                     asset: asset, release: release, name: preset.name, repo: preset.repo,
@@ -299,7 +322,18 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
 
     private func finished(_ result: ModInstallResult, notes: [String] = []) {
         useModLoader(in: result)
-        if result.gameFolder != gameFolder {
+        if result.executable == program.url, result.gameFolder != gameFolder {
+            // A mod in its own folder: switch the game's loader over to it.
+            do {
+                try ModLoaderRedirect.activate(
+                    modFolder: result.gameFolder, gameFolder: gameFolder, bottleURL: program.bottle.url
+                )
+                message = "Installed \(result.mod.name). Press Play to start it through Steam. "
+                    + "The first launch can take a few minutes."
+            } catch {
+                message = "Installed \(result.mod.name), but couldn't switch it on: \(error.localizedDescription)"
+            }
+        } else if result.gameFolder != gameFolder {
             // The mod went into a copy of the game: pin the copy so it has its own launch button.
             let bottle = program.bottle
             if !bottle.settings.pins.contains(where: { $0.url == result.executable }) {
@@ -315,6 +349,40 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         }
         if !notes.isEmpty, let current = message {
             message = ([current] + notes).joined(separator: "\n")
+        }
+        Task { await refresh() }
+    }
+
+    /// Switches the loader to `modFolder` (or off, for nil) and starts the
+    /// game the way its preset says: through Steam for Steam games, whose
+    /// sign-in only works when Steam launches them.
+    private func play(_ preset: ModPreset, modFolder: URL?) {
+        do {
+            if let modFolder {
+                try ModLoaderRedirect.activate(
+                    modFolder: modFolder, gameFolder: gameFolder, bottleURL: program.bottle.url
+                )
+            } else {
+                try ModLoaderRedirect.deactivate(gameFolder: gameFolder)
+            }
+            if preset.launch == .steam, let appId = preset.steamAppId {
+                try SteamLauncher.launch(appId: appId, bottle: program.bottle)
+                message = "Starting \(modFolder == nil ? program.name : preset.name) through Steam…"
+            } else {
+                program.run()
+            }
+        } catch {
+            message = error.localizedDescription
+        }
+        Task { await refresh() }
+    }
+
+    private func turnOffMods() {
+        do {
+            try ModLoaderRedirect.deactivate(gameFolder: gameFolder)
+            message = "Mods are off. The game starts unmodded."
+        } catch {
+            message = error.localizedDescription
         }
         Task { await refresh() }
     }
@@ -397,7 +465,14 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
 
     private func remove(_ mod: InstalledMod, in folder: URL? = nil) {
         do {
-            try ModInstaller.uninstall(mod, from: folder ?? gameFolder)
+            let folder = folder ?? gameFolder
+            try ModInstaller.uninstall(mod, from: folder)
+            if folder != gameFolder, folder.deletingLastPathComponent().lastPathComponent.hasSuffix(" Mods") {
+                if activeMod?.standardizedFileURL == folder.standardizedFileURL {
+                    try ModLoaderRedirect.remove(gameFolder: gameFolder)
+                }
+                try? FileManager.default.removeItem(at: folder)
+            }
             message = "Removed \(mod.name)."
         } catch {
             message = error.localizedDescription

@@ -35,13 +35,39 @@ public struct ModInstallRule: Codable, Hashable, Sendable {
     /// Install into a copy of the game folder rather than the original, so
     /// mods that each ship their own loader don't overwrite each other.
     public var copyGame: Bool
+    /// Install into a folder of the mod's own, next to the game, and point the
+    /// game's loader at it (``ModLoaderRedirect``). The game itself stays put,
+    /// so its store can launch it.
+    public var ownFolder: Bool
 
-    public init(mode: Mode, subpath: String = "", stripTopFolder: Bool = true, copyGame: Bool = false) {
+    public init(
+        mode: Mode, subpath: String = "", stripTopFolder: Bool = true,
+        copyGame: Bool = false, ownFolder: Bool = false
+    ) {
         self.mode = mode
         self.subpath = subpath
         self.stripTopFolder = stripTopFolder
         self.copyGame = copyGame
+        self.ownFolder = ownFolder
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decode(Mode.self, forKey: .mode)
+        subpath = try container.decodeIfPresent(String.self, forKey: .subpath) ?? ""
+        stripTopFolder = try container.decodeIfPresent(Bool.self, forKey: .stripTopFolder) ?? true
+        copyGame = try container.decodeIfPresent(Bool.self, forKey: .copyGame) ?? false
+        ownFolder = try container.decodeIfPresent(Bool.self, forKey: .ownFolder) ?? false
+    }
+}
+
+/// How a modded game is started.
+public enum ModLaunchMethod: String, Codable, Hashable, Sendable {
+    /// Run the game's executable.
+    case direct
+    /// Ask the store's client to launch the game, so its sign-in works.
+    /// Among Us, for one, only signs in when Steam starts it.
+    case steam
 }
 
 /// A recipe for installing a mod from a GitHub repository's latest release.
@@ -58,10 +84,14 @@ public struct ModPreset: Codable, Hashable, Sendable, Identifiable {
     /// Other presets (by repo) that must be installed first.
     public var requires: [String]
     public var notes: String?
+    /// The game's Steam App ID, for ``ModLaunchMethod/steam``.
+    public var steamAppId: Int?
+    public var launch: ModLaunchMethod
 
     public init(
         name: String, repo: String, gameExecutables: [String], assetPattern: String,
-        install: ModInstallRule, requires: [String] = [], notes: String? = nil
+        install: ModInstallRule, requires: [String] = [], notes: String? = nil,
+        steamAppId: Int? = nil, launch: ModLaunchMethod = .direct
     ) {
         self.name = name
         self.repo = repo
@@ -70,6 +100,8 @@ public struct ModPreset: Codable, Hashable, Sendable, Identifiable {
         self.install = install
         self.requires = requires
         self.notes = notes
+        self.steamAppId = steamAppId
+        self.launch = launch
     }
 
     public func matches(executable url: URL) -> Bool {
@@ -107,16 +139,18 @@ public extension ModPreset {
             repo: "AU-Avengers/TOU-Mira",
             gameExecutables: ["Among Us.exe"],
             assetPattern: #"-x64-Steam-Epic-MsStore\.zip$"#,
-            install: ModInstallRule(mode: .extract, copyGame: true),
-            notes: "Ships with BepInEx. The first launch can take a few minutes."
+            install: ModInstallRule(mode: .extract, ownFolder: true),
+            notes: "Ships with BepInEx. The first launch can take a few minutes.",
+            steamAppId: 945360, launch: .steam
         ),
         ModPreset(
             name: "The Other Roles",
             repo: "TheOtherRolesAU/TheOtherRoles",
             gameExecutables: ["Among Us.exe"],
             assetPattern: #"^TheOtherRoles\.zip$"#,
-            install: ModInstallRule(mode: .extract, copyGame: true),
-            notes: "Ships with BepInEx. Needs the Among Us version it was built for."
+            install: ModInstallRule(mode: .extract, ownFolder: true),
+            notes: "Ships with BepInEx. Needs the Among Us version it was built for.",
+            steamAppId: 945360, launch: .steam
         )
     ]
 

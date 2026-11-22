@@ -134,4 +134,39 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: result.executable.path))
         #expect(!FileManager.default.fileExists(atPath: game.appending(path: "Mod.dll").path))
     }
+
+    @Test func loaderRedirectPointsGameAtModFolder() throws {
+        let bottle = FileManager.default.temporaryDirectory.appending(path: "ModTest-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: bottle) }
+        let common = bottle.appending(path: "drive_c/Program Files (x86)/Steam/steamapps/common")
+        let game = common.appending(path: "Among Us")
+        let mod = ModInstaller.modFolder(for: "Town of Us: Mira", game: game)
+        try FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mod, withIntermediateDirectories: true)
+        try Data("theirs".utf8).write(to: game.appending(path: "winhttp.dll"))
+        try Data("doorstop".utf8).write(to: mod.appending(path: "winhttp.dll"))
+        try """
+        [General]
+        enabled = true
+        target_assembly = BepInEx\\core\\BepInEx.Unity.IL2CPP.dll
+        [Il2Cpp]
+        coreclr_path = dotnet\\coreclr.dll
+        corlib_dir = dotnet
+        """.write(to: mod.appending(path: "doorstop_config.ini"), atomically: true, encoding: .utf8)
+
+        try ModLoaderRedirect.activate(modFolder: mod, gameFolder: game, bottleURL: bottle)
+        let config = try String(contentsOf: game.appending(path: "doorstop_config.ini"), encoding: .utf8)
+        let base = #"C:\Program Files (x86)\Steam\steamapps\common\Among Us Mods\Town of Us- Mira"#
+        #expect(config.contains("target_assembly = " + base + #"\BepInEx\core\BepInEx.Unity.IL2CPP.dll"#))
+        #expect(config.contains("corlib_dir = " + base + #"\dotnet"#))
+        #expect(ModLoaderRedirect.activeModFolder(gameFolder: game, bottleURL: bottle)?.lastPathComponent
+            == mod.lastPathComponent)
+
+        try ModLoaderRedirect.deactivate(gameFolder: game)
+        #expect(ModLoaderRedirect.activeModFolder(gameFolder: game, bottleURL: bottle) == nil)
+
+        try ModLoaderRedirect.remove(gameFolder: game)
+        #expect(try String(contentsOf: game.appending(path: "winhttp.dll"), encoding: .utf8) == "theirs")
+        #expect(!FileManager.default.fileExists(atPath: game.appending(path: "doorstop_config.ini").path))
+    }
 }
