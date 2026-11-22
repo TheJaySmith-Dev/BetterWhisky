@@ -16,6 +16,7 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+// swiftlint:disable file_length
 import SwiftUI
 import UniformTypeIdentifiers
 import WhiskyKit
@@ -154,6 +155,11 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                     Text(verbatim: "“\(reason)”").font(.callout).foregroundStyle(.secondary)
                 }
             }
+            let deps = pending.plan.dependencies
+            if !deps.isEmpty {
+                Text("Also installs: " + (deps.repos + deps.runtimeVerbs).joined(separator: ", "))
+                    .font(.callout)
+            }
             if !pending.plan.confident {
                 Text("The README didn't say clearly how to install this, so this is a guess.")
                     .font(.callout).foregroundStyle(.orange)
@@ -166,7 +172,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                     install(
                         asset: pending.plan.asset, release: pending.release,
                         name: pending.repo.components(separatedBy: "/").last ?? pending.repo,
-                        repo: pending.repo, rule: pending.plan.rule
+                        repo: pending.repo, rule: pending.plan.rule, dependencies: pending.plan.dependencies
                     )
                 }
                 .keyboardShortcut(.defaultAction)
@@ -208,18 +214,32 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         }
     }
 
+    /// Gets the latest release, then reads that release's notes and the README
+    /// for install steps. The preset only fills in what they don't say: which
+    /// file to take, and whether to install into a copy of the game.
     private func installPreset(_ preset: ModPreset) {
         Task {
             busy = "Checking \(preset.name)…"
             defer { busy = nil }
             do {
+                async let readme = GitHubReleases.readme(repo: preset.repo)
                 let release = try await GitHubReleases.latestRelease(repo: preset.repo)
                 latestVersions[preset.repo] = release
-                guard let asset = release.assets.first(where: { preset.matchesAsset(named: $0.name) }) else {
-                    message = "\(preset.name) \(release.tagName) has no file matching this preset."
+                let plan = ModReadmePlanner.plan(readme: try? await readme, release: release, repo: preset.repo)
+                guard let asset = release.assets.first(where: { preset.matchesAsset(named: $0.name) })
+                    ?? plan?.asset else {
+                    message = "\(preset.name) \(release.tagName) has no file to install."
                     return
                 }
-                install(asset: asset, release: release, name: preset.name, repo: preset.repo, rule: preset.install)
+                var rule = preset.install
+                if let plan, plan.confident, plan.asset == asset {
+                    rule = plan.rule
+                    rule.copyGame = rule.copyGame || preset.install.copyGame
+                }
+                install(
+                    asset: asset, release: release, name: preset.name, repo: preset.repo,
+                    rule: rule, dependencies: plan?.dependencies ?? ModDependencies()
+                )
             } catch {
                 message = error.localizedDescription
             }
@@ -234,7 +254,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
             do {
                 async let readme = GitHubReleases.readme(repo: repo)
                 let release = try await GitHubReleases.latestRelease(repo: repo)
-                guard let plan = ModReadmePlanner.plan(readme: try await readme, release: release) else {
+                guard let plan = ModReadmePlanner.plan(readme: try await readme, release: release, repo: repo) else {
                     message = "\(repo) \(release.tagName) has no .zip or .dll to install."
                     return
                 }
@@ -246,7 +266,8 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     }
 
     private func install(
-        asset: GitHubRelease.Asset, release: GitHubRelease, name: String, repo: String, rule: ModInstallRule
+        asset: GitHubRelease.Asset, release: GitHubRelease, name: String, repo: String,
+        rule: ModInstallRule, dependencies: ModDependencies = ModDependencies()
     ) {
         Task {
             busy = "Installing \(name) \(release.tagName)…"
@@ -256,7 +277,8 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                     asset: asset, version: release.tagName, name: name, repo: repo,
                     rule: rule, gameExecutable: program.url
                 )
-                finished(result)
+                let notes = await installDependencies(dependencies, into: result, seen: [repo.lowercased()])
+                finished(result, notes: notes)
             } catch {
                 message = error.localizedDescription
             }
@@ -275,7 +297,8 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         }
     }
 
-    private func finished(_ result: ModInstallResult) {
+    private func finished(_ result: ModInstallResult, notes: [String] = []) {
+        useModLoader(in: result)
         if result.gameFolder != gameFolder {
             // The mod went into a copy of the game: pin the copy so it has its own launch button.
             let bottle = program.bottle
@@ -290,7 +313,86 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         } else {
             message = "Installed \(result.mod.name) (\(result.mod.files.count) files)."
         }
+        if !notes.isEmpty, let current = message {
+            message = ([current] + notes).joined(separator: "\n")
+        }
         Task { await refresh() }
+    }
+
+    /// Installs what a mod needs: other mods from their latest releases (into
+    /// the same game folder, following their own install steps) and Windows
+    /// runtimes through winetricks. Returns a line per dependency for the user.
+    private func installDependencies(
+        _ deps: ModDependencies, into result: ModInstallResult, seen: Set<String>, depth: Int = 0
+    ) async -> [String] {
+        var notes: [String] = []
+        var seen = seen
+        if deps.needsBepInEx, !ModInstaller.hasBepInEx(result.gameFolder) {
+            notes.append("This mod needs BepInEx, which isn't in its download. Use a build that includes it.")
+        }
+        for repo in deps.repos where depth < 3 && !seen.contains(repo.lowercased()) {
+            seen.insert(repo.lowercased())
+            let present = ModInstaller.installedMods(in: result.gameFolder)
+            if present.contains(where: { $0.repo.lowercased() == repo.lowercased() }) { continue }
+            busy = "Installing dependency \(repo)…"
+            do {
+                async let readme = GitHubReleases.readme(repo: repo)
+                let release = try await GitHubReleases.latestRelease(repo: repo)
+                guard let plan = ModReadmePlanner.plan(readme: try? await readme, release: release, repo: repo) else {
+                    notes.append("Dependency \(repo) has nothing to install.")
+                    continue
+                }
+                var rule = plan.rule
+                rule.copyGame = false
+                if plan.asset.name.lowercased().hasSuffix(".dll"), ModInstaller.hasBepInEx(result.gameFolder) {
+                    rule.subpath = "BepInEx/plugins"
+                }
+                let name = repo.components(separatedBy: "/").last ?? repo
+                _ = try await ModInstaller.install(
+                    asset: plan.asset, version: release.tagName, name: name, repo: repo,
+                    rule: rule, gameExecutable: result.executable
+                )
+                notes.append("Installed dependency \(name) \(release.tagName).")
+                notes += await installDependencies(plan.dependencies, into: result, seen: seen, depth: depth + 1)
+            } catch {
+                notes.append("Dependency \(repo) failed: \(error.localizedDescription)")
+            }
+        }
+        notes += await installRuntimes(deps.runtimeVerbs)
+        return notes
+    }
+
+    /// Windows runtimes through winetricks, skipping a VC++ runtime that's already there.
+    private func installRuntimes(_ verbs: [String]) async -> [String] {
+        var notes: [String] = []
+        for verb in verbs {
+            if verb.hasPrefix("vcrun"), VCRedistDetector.isInstalled(prefixURL: program.bottle.url) { continue }
+            busy = "Installing \(verb)…"
+            var outcome = "\(verb) didn't finish."
+            for await event in Winetricks.installVerb(verb, for: program.bottle) {
+                switch event {
+                case .completed(let code): outcome = code == 0 ? "Installed \(verb)." : "\(verb) failed (exit \(code))."
+                case .failed(let reason): outcome = "\(verb) failed: \(reason)"
+                default: break
+                }
+            }
+            notes.append(outcome)
+        }
+        return notes
+    }
+
+    /// BepInEx and similar loaders ship their own winhttp.dll, which Wine
+    /// ignores in favour of its built-in one unless the game is told otherwise.
+    private func useModLoader(in result: ModInstallResult) {
+        let loader = result.gameFolder.appending(path: "winhttp.dll")
+        guard FileManager.default.fileExists(atPath: loader.path(percentEncoded: false)) else { return }
+        let target = result.executable == program.url
+            ? program : Program(url: result.executable, bottle: program.bottle)
+        var overrides = target.settings.overrides ?? ProgramOverrides()
+        var dlls = (overrides.dllOverrides ?? []).filter { $0.dllName.lowercased() != "winhttp" }
+        dlls.append(DLLOverrideEntry(dllName: "winhttp", mode: .nativeThenBuiltin))
+        overrides.dllOverrides = dlls
+        target.settings.overrides = overrides
     }
 
     private func remove(_ mod: InstalledMod, in folder: URL? = nil) {

@@ -28,7 +28,11 @@ import Testing
     }
 
     func release(_ names: [String]) -> GitHubRelease {
-        GitHubRelease(tagName: "v1", publishedAt: Date(), prerelease: false, assets: names.map(asset))
+        release(names, notes: nil)
+    }
+
+    func release(_ names: [String], notes: String?) -> GitHubRelease {
+        GitHubRelease(tagName: "v1", publishedAt: Date(), prerelease: false, assets: names.map(asset), body: notes)
     }
 
     @Test func picksSteamZipForTOUMira() {
@@ -55,6 +59,27 @@ import Testing
         let plan = try #require(ModReadmePlanner.plan(readme: readme, release: release(["Mod.dll", "Source.zip"])))
         #expect(plan.rule.mode == .copyFile)
         #expect(plan.rule.subpath == "BepInEx/plugins")
+    }
+
+    @Test func releaseNotesWinOverReadme() throws {
+        let notes = "Install: put Mod.dll in BepInEx/plugins"
+        let plan = try #require(ModReadmePlanner.plan(
+            readme: "Old instructions", release: release(["Mod.dll", "Mod.zip"], notes: notes)
+        ))
+        #expect(plan.rule.subpath == "BepInEx/plugins")
+        #expect(plan.reasons.contains { $0.contains("BepInEx/plugins") })
+    }
+
+    @Test func findsDependencies() {
+        let text = """
+        ## Requirements
+        Requires [Reactor](https://github.com/NuclearPowered/Reactor) and BepInEx.
+        Needs the Visual C++ runtime.
+        See https://github.com/Me/ThisMod/releases for downloads.
+        """
+        let deps = ModDependencies.find(in: text, selfRepo: "Me/ThisMod", assetNames: ["ThisMod.dll"])
+        #expect(deps.repos == ["NuclearPowered/Reactor"])
+        #expect(deps.runtimeVerbs == ["vcrun2022"])
     }
 
     @Test func repoSlugParsing() {

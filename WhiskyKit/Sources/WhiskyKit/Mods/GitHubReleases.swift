@@ -34,11 +34,13 @@ public struct GitHubRelease: Decodable, Sendable, Hashable {
     public let publishedAt: Date?
     public let prerelease: Bool
     public let assets: [Asset]
+    /// The release notes, which often carry the install steps for that version.
+    public let body: String?
 
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case publishedAt = "published_at"
-        case prerelease, assets
+        case prerelease, assets, body
     }
 
     /// Whether the release is older than about six months.

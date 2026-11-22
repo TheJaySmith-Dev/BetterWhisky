@@ -26,6 +26,65 @@ public struct ModInstallPlan: Sendable, Hashable {
     public var reasons: [String]
     /// Whether the README said clearly how to install, rather than the planner guessing.
     public var confident: Bool
+    /// What the mod needs installed alongside it.
+    public var dependencies = ModDependencies()
+}
+
+/// Things a mod says it needs: other mods on GitHub and Windows runtimes.
+public struct ModDependencies: Sendable, Hashable {
+    /// Other mods, as `owner/name`, to install from their latest release.
+    public var repos: [String] = []
+    /// Winetricks verbs for Windows runtimes (Visual C++, .NET, …).
+    public var runtimeVerbs: [String] = []
+    /// Needs a mod loader (BepInEx) the archive doesn't include.
+    public var needsBepInEx = false
+
+    public init() {}
+
+    public var isEmpty: Bool { repos.isEmpty && runtimeVerbs.isEmpty && !needsBepInEx }
+
+    static let runtimeKeywords: [(keys: [String], verb: String)] = [
+        (["visual c++", "vc++", "vcredist", "vc_redist", "msvc runtime"], "vcrun2022"),
+        ([".net framework 4.8", "dotnet 4.8", "net48"], "dotnet48"),
+        ([".net framework 4.7", "dotnet 4.7"], "dotnet472"),
+        (["xna framework", "xna 4"], "xna40"),
+        (["d3dcompiler_47"], "d3dcompiler_47")
+    ]
+
+    /// Reads dependencies out of release notes and README text.
+    public static func find(in text: String, selfRepo: String?, assetNames: [String]) -> ModDependencies {
+        var found = ModDependencies()
+        let lower = text.lowercased()
+        for entry in runtimeKeywords where entry.keys.contains(where: lower.contains) {
+            if !found.runtimeVerbs.contains(entry.verb) { found.runtimeVerbs.append(entry.verb) }
+        }
+
+        // GitHub links on lines that talk about requirements.
+        let cues = ["require", "depend", "needs", "need ", "prerequisite", "install first", "built on", "uses "]
+        for line in text.components(separatedBy: .newlines) {
+            let lowerLine = line.lowercased()
+            guard cues.contains(where: lowerLine.contains) else { continue }
+            for slug in githubSlugs(in: line) where slug.lowercased() != selfRepo?.lowercased() {
+                if !found.repos.contains(where: { $0.lowercased() == slug.lowercased() }) { found.repos.append(slug) }
+            }
+        }
+
+        let bundlesLoader = assetNames.contains { $0.lowercased().contains("bepinex") }
+        let talksLoader = lower.contains("requires bepinex") || lower.contains("bepinex is required")
+            || lower.contains("install bepinex")
+        found.needsBepInEx = talksLoader && !bundlesLoader
+        return found
+    }
+
+    static func githubSlugs(in line: String) -> [String] {
+        let pattern = #"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(line.startIndex..., in: line)
+        return regex.matches(in: line, range: range).compactMap { match in
+            Range(match.range(at: 1), in: line).flatMap { ModPreset.repoSlug(from: String(line[$0])) }
+        }
+        .filter { !["releases", "issues", "blob", "tree", "wiki"].contains($0.split(separator: "/").last ?? "") }
+    }
 }
 
 /// Turns a mod's README and release files into install steps.
@@ -35,8 +94,10 @@ public struct ModInstallPlan: Sendable, Hashable {
 /// back to the shape of the release files. The result is always shown to the
 /// user before anything is written.
 public enum ModReadmePlanner {
-    public static func plan(readme: String?, release: GitHubRelease) -> ModInstallPlan? {
-        let text = readme ?? ""
+    /// Reads the latest release's notes first, then the README, so steps that
+    /// changed with a release win over older README text.
+    public static func plan(readme: String?, release: GitHubRelease, repo: String? = nil) -> ModInstallPlan? {
+        let text = [release.body, readme].compactMap { $0 }.joined(separator: "\n")
         let sentences = text
             .components(separatedBy: CharacterSet(charactersIn: "\n.!"))
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -80,7 +141,12 @@ public enum ModReadmePlanner {
         if reasons.isEmpty {
             reasons.append("No install steps found in the README; guessing from the release file \(asset.name).")
         }
-        return ModInstallPlan(asset: asset, rule: rule, reasons: reasons, confident: confident)
+        let dependencies = ModDependencies.find(
+            in: text, selfRepo: repo, assetNames: release.assets.map(\.name)
+        )
+        return ModInstallPlan(
+            asset: asset, rule: rule, reasons: reasons, confident: confident, dependencies: dependencies
+        )
     }
 
     /// The release file most likely meant for a Windows game on Steam.
