@@ -1,6 +1,6 @@
 <div align="center">
 
-  # Whisky 🥃
+  # BetterWhisky 🥃
   *Wine but a bit stronger*
 
   > **Active community fork.** The original [whisky-app/whisky](https://github.com/whisky-app/whisky)
