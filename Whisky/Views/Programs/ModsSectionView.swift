@@ -35,6 +35,8 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     @State private var message: String?
     @State private var dropTargeted = false
     @State private var activeMod: URL?
+    @State private var showAddSheet = false
+    @Binding var modsChanged: Int
 
     struct PendingPlan: Identifiable {
         let id = UUID()
@@ -47,54 +49,22 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     private var presets: [ModPreset] { ModPreset.presets(for: program.url) }
 
     var body: some View {
-        Section(String(localized: "Mods"), isExpanded: $isExpanded) {
+        Section(isExpanded: $isExpanded) {
             ForEach(presets) { preset in
                 presetRow(preset)
             }
-
-            if let active = activeMod {
-                HStack {
-                    Text("Mods on: \(active.lastPathComponent)").foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Turn Off Mods") { turnOffMods() }
-                    if let preset = presets.first(where: { $0.launch == .steam }) {
-                        Button("Play Without Mods") { play(preset, modFolder: nil) }
-                    }
-                }
-            }
-
             ForEach(installed.filter { mod in !presets.contains { $0.repo == mod.repo } }) { mod in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(mod.name)
-                        Text(mod.version).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Remove", role: .destructive) { remove(mod) }
-                }
+                otherModRow(mod)
             }
-
-            HStack {
-                TextField("GitHub repo", text: $repoInput, prompt: Text(verbatim: "owner/repo or GitHub link"))
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(planFromGitHub)
-                Button("Read Install Steps", action: planFromGitHub)
-                    .disabled(ModPreset.repoSlug(from: repoInput) == nil || busy != nil)
+            addRow
+            if busy != nil || message != nil {
+                statusRow
             }
-
-            dropZone
-
-            if let busy {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(busy).foregroundStyle(.secondary)
-                }
-            }
-            if let message {
-                Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-            }
+        } header: {
+            Text("Mods")
         }
         .task(id: program.url) { await refresh() }
+        .sheet(isPresented: $showAddSheet) { addSheet }
         .sheet(item: $pendingPlan) { pending in
             planSheet(pending)
         }
@@ -106,59 +76,178 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     private func presetRow(_ preset: ModPreset) -> some View {
         let release = latestVersions[preset.repo]
         let current = installedPreset(preset)
-        HStack {
+        let isOn = current.map { isActive($0.folder) } ?? false
+        let update = release.flatMap { release in
+            current.flatMap { $0.mod.version == release.tagName ? nil : release.tagName }
+        }
+        HStack(spacing: 12) {
+            modIcon
             VStack(alignment: .leading, spacing: 2) {
-                Text(preset.name)
+                HStack(spacing: 6) {
+                    Text(preset.name)
+                    if isOn {
+                        Circle().fill(.green).frame(width: 6, height: 6)
+                        Text("On").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Group {
                     if let current {
-                        Text("Installed \(current.mod.version)")
+                        Text(update.map { "Version \(current.mod.version) · \($0) available" }
+                            ?? "Version \(current.mod.version)")
                     } else if let release {
                         Text("Latest \(release.tagName)")
                     } else {
                         Text(verbatim: preset.repo)
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
-                if let release, release.isStale {
-                    Text("Last release is over six months old and may not work with the current game version.")
-                        .font(.caption).foregroundStyle(.orange)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if current == nil, let release, release.isStale {
+                    Label("Last release is over six months old", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help("It may not work with the current version of the game.")
                 }
             }
-            Spacer()
-            if let current {
-                if let release, release.tagName != current.mod.version {
-                    Button("Update") { installPreset(preset) }.disabled(busy != nil)
+            Spacer(minLength: 12)
+            presetActions(preset, current: current, isOn: isOn, update: update)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func presetActions(
+        _ preset: ModPreset, current: (mod: InstalledMod, folder: URL)?, isOn: Bool, update: String?
+    ) -> some View {
+        if let current {
+            if isOn {
+                Button("Play") { play(preset, modFolder: current.folder) }
+                    .disabled(busy != nil)
+            } else if preset.install.ownFolder {
+                Button("Turn On") { switchOn(current.folder) }
+                    .disabled(busy != nil)
+            }
+            Menu {
+                if let update {
+                    Button("Update to \(update)") { installPreset(preset) }
                 }
-                if current.folder != gameFolder, preset.install.ownFolder {
-                    Button("Play") { play(preset, modFolder: current.folder) }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(busy != nil)
+                if isOn {
+                    Button("Turn Off") { turnOffMods() }
                 }
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([current.folder])
+                }
+                Divider()
                 Button("Remove", role: .destructive) { remove(current.mod, in: current.folder) }
-            } else {
-                Button("Install Mod") { installPreset(preset) }.disabled(busy != nil)
+            } label: {
+                Image(systemName: "ellipsis")
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(busy != nil)
+        } else {
+            Button("Install") { installPreset(preset) }
+                .disabled(busy != nil)
         }
     }
 
-    private var dropZone: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
-            .foregroundStyle(dropTargeted ? Color.accentColor : .secondary)
-            .frame(height: 64)
-            .overlay {
-                Label("Drop a mod .zip or .dll here", systemImage: "square.and.arrow.down")
-                    .foregroundStyle(.secondary)
+    private func otherModRow(_ mod: InstalledMod) -> some View {
+        HStack(spacing: 12) {
+            modIcon
+            VStack(alignment: .leading, spacing: 2) {
+                Text(mod.name)
+                Text("Version \(mod.version)").font(.caption).foregroundStyle(.secondary)
             }
-            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-                for provider in providers {
-                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                        guard let url else { return }
-                        Task { @MainActor in installDropped(url) }
-                    }
+            Spacer(minLength: 12)
+            Menu {
+                Button("Remove", role: .destructive) { remove(mod) }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var modIcon: some View {
+        Image(systemName: "puzzlepiece.extension")
+            .font(.system(size: 14))
+            .foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    /// Add from GitHub, or drop a file anywhere on the row.
+    private var addRow: some View {
+        HStack(spacing: 12) {
+            Button("Add from GitHub…", systemImage: "link") { showAddSheet = true }
+                .disabled(busy != nil)
+            Spacer()
+            Label("Drop a .zip or .dll", systemImage: "arrow.down.doc")
+                .font(.caption)
+                .foregroundStyle(dropTargeted ? Color.accentColor : .secondary)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, dropTargeted ? 8 : 0)
+        .background {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1, dash: [4]))
+            }
+        }
+        .contentShape(Rectangle())
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in installDropped(url) }
                 }
-                return !providers.isEmpty
             }
+            return !providers.isEmpty
+        }
+    }
+
+    private var statusRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let busy {
+                ProgressView().controlSize(.small)
+                Text(busy)
+            } else if let message {
+                Image(systemName: "info.circle")
+                Text(message).textSelection(.enabled)
+                Spacer(minLength: 8)
+                Button("Dismiss", systemImage: "xmark") { self.message = nil }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+
+    private var addSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add a mod from GitHub").font(.headline)
+            Text("BetterWhisky reads the latest release and its install steps, and shows you the plan first.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            TextField("Repository", text: $repoInput, prompt: Text(verbatim: "owner/repo or a GitHub link"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(planFromGitHub)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { showAddSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Continue", action: planFromGitHub)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(ModPreset.repoSlug(from: repoInput) == nil || busy != nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 
     private func planSheet(_ pending: PendingPlan) -> some View {
@@ -231,6 +320,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     private func refresh() async {
         installed = ModInstaller.installedMods(in: gameFolder)
         activeMod = ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: program.bottle.url)
+        modsChanged += 1
         for preset in presets where latestVersions[preset.repo] == nil {
             latestVersions[preset.repo] = try? await GitHubReleases.latestRelease(repo: preset.repo)
         }
@@ -281,6 +371,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                     message = "\(repo) \(release.tagName) has no .zip or .dll to install."
                     return
                 }
+                showAddSheet = false
                 pendingPlan = PendingPlan(repo: repo, release: release, plan: plan)
             } catch {
                 message = error.localizedDescription
@@ -377,10 +468,24 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         Task { await refresh() }
     }
 
+    private func isActive(_ folder: URL) -> Bool {
+        activeMod != nil && ModLoaderRedirect.pointsAt(folder, gameFolder: gameFolder, bottleURL: program.bottle.url)
+    }
+
+    private func switchOn(_ folder: URL) {
+        do {
+            try ModLoaderRedirect.activate(modFolder: folder, gameFolder: gameFolder, bottleURL: program.bottle.url)
+            message = nil
+        } catch {
+            message = error.localizedDescription
+        }
+        Task { await refresh() }
+    }
+
     private func turnOffMods() {
         do {
             try ModLoaderRedirect.deactivate(gameFolder: gameFolder)
-            message = "Mods are off. The game starts unmodded."
+            message = nil
         } catch {
             message = error.localizedDescription
         }

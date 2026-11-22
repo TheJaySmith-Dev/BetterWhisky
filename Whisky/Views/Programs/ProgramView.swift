@@ -35,6 +35,7 @@ struct ProgramView: View {
     @AppStorage("overridesSectionExpanded") private var overridesSectionExpanded: Bool = false
     @AppStorage("consoleRunsSectionExpanded") private var consoleRunsSectionExpanded: Bool = false
     @State private var selectedRunId: UUID?
+    @State private var modsChanged = 0
 
     private let sessionStore = TroubleshootingSessionStore()
 
@@ -45,6 +46,12 @@ struct ProgramView: View {
                     showTroubleshootingWizard = true
                 }
             }
+            Section {
+                GameHeaderView(program: program, modsChanged: modsChanged) { launchProgram() }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+            }
+            ModsSectionView(program: program, isExpanded: $modsSectionExpanded, modsChanged: $modsChanged)
             Section("program.config", isExpanded: $configSectionExpanded) {
                 Picker("locale.title", selection: $program.settings.locale) {
                     ForEach(Locales.allCases, id: \.self) { locale in
@@ -62,7 +69,6 @@ struct ProgramView: View {
                         .labelsHidden()
                 }
             }
-            ModsSectionView(program: program, isExpanded: $modsSectionExpanded)
             EnvironmentArgView(program: program, isExpanded: $envArgsSectionExpanded)
             ProgramOverrideSettingsView(
                 bottle: program.bottle,
@@ -185,6 +191,107 @@ struct ProgramView: View {
                 toast = result.toastData
             }
             programLoading = false
+        }
+    }
+}
+
+/// The top of a game's page: its Steam artwork, its name, which mod is on,
+/// and Play. A Steam game plays through Steam, which is what its sign-in needs.
+struct GameHeaderView: View {
+    @ObservedObject var program: Program
+    /// Bumped by the Mods section whenever a mod is installed, switched or removed.
+    var modsChanged: Int
+    var onPlayDirect: () -> Void
+
+    @State private var artwork: NSImage?
+    @State private var steamAppId: Int?
+    @State private var activeMod: String?
+    @State private var launching = false
+
+    private var title: String {
+        program.name.replacingOccurrences(of: ".exe", with: "", options: [.caseInsensitive, .anchored, .backwards])
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let artwork {
+                Color.clear
+                    .overlay { Image(nsImage: artwork).resizable().scaledToFill() }
+                    .clipped()
+            } else {
+                Rectangle().fill(.quaternary)
+            }
+            // Keeps the title readable on art we don't control.
+            LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
+
+            HStack(alignment: .bottom, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.title2.weight(.semibold))
+                        .lineLimit(1)
+                    modLine
+                }
+                Spacer(minLength: 16)
+                Button(action: play) {
+                    Label("Play", systemImage: "play.fill")
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(launching)
+                .help(steamAppId == nil ? "Run \(program.name)" : "Start through Steam")
+            }
+            .padding(20)
+            .foregroundStyle(.white)
+        }
+        .frame(height: 180)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .task(id: "\(program.url.path)#\(modsChanged)") { await load() }
+    }
+
+    /// The signature detail: a dot and the mod's name whenever one is on.
+    @ViewBuilder private var modLine: some View {
+        if let activeMod {
+            HStack(spacing: 6) {
+                Circle().fill(.green).frame(width: 6, height: 6)
+                Text(activeMod)
+            }
+            .font(.callout)
+        } else {
+            Text(steamAppId == nil ? "No mods" : "Steam · No mods")
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.7))
+        }
+    }
+
+    private func load() async {
+        let bottleURL = program.bottle.url
+        let gamePath = program.url.standardizedFileURL.path
+        let game = SteamLibrary.enumerate(bottleURL: bottleURL).first {
+            gamePath.hasPrefix($0.installURL.standardizedFileURL.path + "/")
+        }
+        steamAppId = game?.appId
+        if let game, let root = SteamLibrary.detectInstall(bottleURL: bottleURL),
+           let url = SteamLibrarySource.artworkURL(appID: game.appId, steamRoot: root),
+           let sampled = await IconCache.shared.sampledArtwork(for: url) {
+            artwork = sampled.image
+        }
+        let gameFolder = program.url.deletingLastPathComponent()
+        activeMod = ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: bottleURL)
+            .flatMap { ModInstaller.installedMods(in: $0).first?.name }
+    }
+
+    private func play() {
+        guard let appId = steamAppId else { onPlayDirect(); return }
+        launching = true
+        do {
+            try SteamLauncher.launch(appId: appId, bottle: program.bottle)
+        } catch {
+            onPlayDirect()
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            launching = false
         }
     }
 }
