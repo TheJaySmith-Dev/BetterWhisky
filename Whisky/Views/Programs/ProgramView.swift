@@ -31,6 +31,7 @@ struct ProgramView: View {
     @State private var hasActiveSession: Bool = false
     @AppStorage("configSectionExapnded") private var configSectionExpanded: Bool = true
     @AppStorage("envArgsSectionExpanded") private var envArgsSectionExpanded: Bool = true
+    @AppStorage("modsSectionExpanded") private var modsSectionExpanded: Bool = true
     @AppStorage("overridesSectionExpanded") private var overridesSectionExpanded: Bool = false
     @AppStorage("consoleRunsSectionExpanded") private var consoleRunsSectionExpanded: Bool = false
     @State private var selectedRunId: UUID?
@@ -61,6 +62,7 @@ struct ProgramView: View {
                         .labelsHidden()
                 }
             }
+            ModsSectionView(program: program, isExpanded: $modsSectionExpanded)
             EnvironmentArgView(program: program, isExpanded: $envArgsSectionExpanded)
             ProgramOverrideSettingsView(
                 bottle: program.bottle,
