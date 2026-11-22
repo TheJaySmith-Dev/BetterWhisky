@@ -277,19 +277,24 @@ struct GameHeaderView: View {
             artwork = sampled.image
         }
         let gameFolder = program.url.deletingLastPathComponent()
-        activeMod = ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: bottleURL)
+        let selected = game.flatMap { SteamModLauncher.selected(appId: $0.appId, bottleURL: bottleURL) }
+        activeMod = (selected?.deletingLastPathComponent()
+            ?? ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: bottleURL))
             .flatMap { ModInstaller.installedMods(in: $0).first?.name }
     }
 
     private func play() {
         guard let appId = steamAppId else { onPlayDirect(); return }
         launching = true
-        do {
-            try SteamLauncher.launch(appId: appId, bottle: program.bottle)
-        } catch {
-            onPlayDirect()
-        }
         Task {
+            if SteamModLauncher.selected(appId: appId, bottleURL: program.bottle.url) != nil {
+                try? await SteamModLauncher.prepare(appId: appId, bottle: program.bottle)
+            }
+            do {
+                try SteamLauncher.launch(appId: appId, bottle: program.bottle)
+            } catch {
+                onPlayDirect()
+            }
             try? await Task.sleep(for: .seconds(3))
             launching = false
         }

@@ -71,6 +71,12 @@ struct LibraryView: View {
         .toast($model.toast)
         .task(id: reloadTrigger) {
             await model.reload(bottles: bottles)
+            // Mods move to their latest release on their own, at most every few hours.
+            let updates = await ModAutoUpdater.runIfDue(bottles: bottles)
+            if !updates.isEmpty {
+                model.toast = ToastData(message: updates.joined(separator: " "), style: .success)
+                await model.reload(bottles: bottles)
+            }
         }
         .onChange(of: sort, initial: true) {
             model.sort = sort

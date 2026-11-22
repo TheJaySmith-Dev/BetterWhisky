@@ -39,16 +39,22 @@ public struct ModInstallRule: Codable, Hashable, Sendable {
     /// game's loader at it (``ModLoaderRedirect``). The game itself stays put,
     /// so its store can launch it.
     public var ownFolder: Bool
+    /// Install into a copy of the game, frozen at the version the mod was
+    /// installed for, inside `<Game> Mods/<Mod>/game`. Steam keeps updating
+    /// the real game; the copy stays playable with the mod until the mod
+    /// catches up. Steam starts it through ``SteamModLauncher``.
+    public var frozenCopy: Bool
 
     public init(
         mode: Mode, subpath: String = "", stripTopFolder: Bool = true,
-        copyGame: Bool = false, ownFolder: Bool = false
+        copyGame: Bool = false, ownFolder: Bool = false, frozenCopy: Bool = false
     ) {
         self.mode = mode
         self.subpath = subpath
         self.stripTopFolder = stripTopFolder
         self.copyGame = copyGame
         self.ownFolder = ownFolder
+        self.frozenCopy = frozenCopy
     }
 
     public init(from decoder: Decoder) throws {
@@ -58,6 +64,7 @@ public struct ModInstallRule: Codable, Hashable, Sendable {
         stripTopFolder = try container.decodeIfPresent(Bool.self, forKey: .stripTopFolder) ?? true
         copyGame = try container.decodeIfPresent(Bool.self, forKey: .copyGame) ?? false
         ownFolder = try container.decodeIfPresent(Bool.self, forKey: .ownFolder) ?? false
+        frozenCopy = try container.decodeIfPresent(Bool.self, forKey: .frozenCopy) ?? false
     }
 }
 
@@ -139,7 +146,7 @@ public extension ModPreset {
             repo: "AU-Avengers/TOU-Mira",
             gameExecutables: ["Among Us.exe"],
             assetPattern: #"-x64-Steam-Epic-MsStore\.zip$"#,
-            install: ModInstallRule(mode: .extract, ownFolder: true),
+            install: ModInstallRule(mode: .extract, frozenCopy: true),
             notes: "Ships with BepInEx. The first launch can take a few minutes.",
             steamAppId: 945360, launch: .steam
         ),
@@ -148,7 +155,7 @@ public extension ModPreset {
             repo: "TheOtherRolesAU/TheOtherRoles",
             gameExecutables: ["Among Us.exe"],
             assetPattern: #"^TheOtherRoles\.zip$"#,
-            install: ModInstallRule(mode: .extract, ownFolder: true),
+            install: ModInstallRule(mode: .extract, frozenCopy: true),
             notes: "Ships with BepInEx. Needs the Among Us version it was built for.",
             steamAppId: 945360, launch: .steam
         )

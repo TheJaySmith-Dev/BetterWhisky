@@ -263,7 +263,25 @@ extension LibraryModel {
             if case let .autoCleared(contentType, sizeBytes) = bottle.performClipboardCheck() {
                 toast = .clipboardCleared(contentType: contentType, sizeBytes: sizeBytes)
             }
-            orchestrator(for: bottle).launch(game)
+            guard let variant = row.item.mod else {
+                orchestrator(for: bottle).launch(game)
+                return
+            }
+            // A game with mods: point Steam at this card's version first.
+            Task {
+                do {
+                    if let copy = variant.modFolder {
+                        try await SteamModLauncher.prepare(appId: appID, bottle: bottle)
+                        let exe = ModInstaller.mainExecutable(in: copy)
+                        try SteamModLauncher.select(exe, appId: appID, bottleURL: bottle.url)
+                    } else {
+                        try SteamModLauncher.select(nil, appId: appID, bottleURL: bottle.url)
+                    }
+                    orchestrator(for: bottle).launch(game)
+                } catch {
+                    launchError = error.localizedDescription
+                }
+            }
         }
     }
 

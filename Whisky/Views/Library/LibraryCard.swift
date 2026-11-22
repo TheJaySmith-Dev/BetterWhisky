@@ -146,7 +146,16 @@ struct LibraryCard: View {
                     statusView
                 }
                 Spacer(minLength: 8)
-                Text(title)
+                if let modName = item.mod?.modName {
+                    // The signature: a dot and the mod's name on every modded game.
+                    HStack(spacing: 6) {
+                        Circle().fill(.green).frame(width: 6, height: 6)
+                        Text(modName)
+                    }
+                    .font(.caption.weight(.medium))
+                    .padding(.bottom, 2)
+                }
+                Text(item.mod?.modName != nil ? baseTitle : title)
                     .font(.headline)
                     .lineLimit(1)
                     // Tail, not middle: a game's name is recognisable from its
@@ -200,11 +209,20 @@ struct LibraryCard: View {
                 .cardGlass(.capsule)
         case .idle:
             if isActive {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 13))
-                    .frame(width: 30, height: 30)
-                    .cardGlass(.circle, interactive: true)
-                    .transition(.opacity.combined(with: .scale))
+                if item.mod?.modFolder != nil {
+                    Label("Play Mod", systemImage: "play.fill")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .cardGlass(.capsule, interactive: true)
+                        .transition(.opacity)
+                } else {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 13))
+                        .frame(width: 30, height: 30)
+                        .cardGlass(.circle, interactive: true)
+                        .transition(.opacity.combined(with: .scale))
+                }
             }
         }
     }
@@ -221,6 +239,12 @@ struct LibraryCard: View {
                 .fill(.white.opacity(0.12))
                 .frame(width: 44, height: 44)
         }
+    }
+
+    /// A modded card shows the game's name, with the mod on the line above.
+    private var baseTitle: String {
+        guard let modName = item.mod?.modName else { return title }
+        return title.replacingOccurrences(of: " · \(modName)", with: "")
     }
 
     /// Source first when it is not a pin, because "Steam" tells you why an entry

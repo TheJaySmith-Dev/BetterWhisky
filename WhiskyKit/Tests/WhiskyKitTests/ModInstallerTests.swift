@@ -171,4 +171,49 @@ import Testing
         #expect(try String(contentsOf: game.appending(path: "winhttp.dll"), encoding: .utf8) == "theirs")
         #expect(!FileManager.default.fileExists(atPath: game.appending(path: "doorstop_config.ini").path))
     }
+
+    @Test func readsRequiredGameVersions() {
+        let tou = #"<img alt="Latest AU Version" src="https://badgen.net/static/AmongUs/2026.9.29/yellow">"#
+        #expect(ModGameVersion.required(in: tou, modVersion: "1.7.9-beta2") == "2026.9.29")
+        let tor = """
+        | Among Us - Version| Mod Version | Link |
+        | 2024.11.26| v4.8.0| [Download](https://example.com/v4.8.0/TheOtherRoles.zip)
+        | 2024.3.5s| v4.5.3| [Download](https://example.com/v4.5.3/TheOtherRoles.zip)
+        """
+        #expect(ModGameVersion.required(in: tor, modVersion: "v4.8.0") == "2024.11.26")
+        #expect(ModGameVersion.required(in: tor, modVersion: "v4.5.3") == "2024.3.5")
+        #expect(ModGameVersion.matches("2024.3.5s", "2024.03.05"))
+        #expect(!ModGameVersion.matches("2024.11.26", "2026.9.29"))
+        // Unity's own version must not be taken for the game's.
+        #expect(ModGameVersion.versions(in: "2022.3.44f1 2026.9.29") == ["2026.9.29"])
+    }
+
+    @Test func setsSteamLaunchOption() {
+        let config = "\"apps\"\n{\n\t\"945360\"\n\t{\n\t\t\"LastPlayed\"\t\t\"1\"\n"
+            + "\t\t\"LaunchOptions\"\t\t\"old\"\n\t}\n}\n"
+        let option = #"C:\\BetterWhisky\\launch-945360.bat %command%"#
+        let updated = SteamModLauncher.setOption(option, appId: 945360, in: config)
+        #expect(updated.contains("LaunchOptions") && updated.contains("launch-945360.bat %command%"))
+        #expect(!updated.contains("old"))
+        #expect(updated.contains("LastPlayed"))
+    }
+
+    @Test func decidesWhatToDoWithAModRelease() {
+        typealias Version = ModGameVersion
+        // First install, mod matches the game: clone it.
+        #expect(Version.decide(required: "2026.9.29", game: "2026.9.29", copy: nil, hasCopy: false)
+            == .install(freshCopy: true))
+        // First install, mod is behind the game: nothing to clone from.
+        #expect(Version.decide(required: "2024.11.26", game: "2026.9.29", copy: nil, hasCopy: false)
+            == .blocked(required: "2024.11.26", game: "2026.9.29"))
+        // Game updated, mod hasn't: keep the frozen copy.
+        #expect(Version.decide(required: "2026.9.29", game: "2026.12.1", copy: "2026.9.29", hasCopy: true)
+            == .install(freshCopy: false))
+        // Mod caught up with the new game: re-clone the new game.
+        #expect(Version.decide(required: "2026.12.1", game: "2026.12.1", copy: "2026.9.29", hasCopy: true)
+            == .install(freshCopy: true))
+        // A release for some other version: leave things alone.
+        #expect(Version.decide(required: "2025.1.1", game: "2026.12.1", copy: "2026.9.29", hasCopy: true)
+            == .keep(required: "2025.1.1"))
+    }
 }

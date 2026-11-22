@@ -39,6 +39,21 @@ public struct LibrarySourceID: RawRepresentable, Hashable, Sendable, Codable {
 }
 
 /// One thing a person can launch, whatever put it there.
+/// One version of a modded game: the game with a given mod switched on, or
+/// with mods switched off. Launching it points the game's loader first.
+public struct ModVariant: Hashable, Sendable {
+    public let gameFolder: URL
+    /// The mod's own folder, or nil for the unmodded game.
+    public let modFolder: URL?
+    public let modName: String?
+
+    public init(gameFolder: URL, modFolder: URL?, modName: String?) {
+        self.gameFolder = gameFolder
+        self.modFolder = modFolder
+        self.modName = modName
+    }
+}
+
 public struct LibraryEntry: Identifiable, Hashable, Sendable {
     /// How to start it. Sources that need their own launch path add a case;
     /// everything else in the library stays the same.
@@ -66,6 +81,8 @@ public struct LibraryEntry: Identifiable, Hashable, Sendable {
     /// account, a store and an update. It is not what somebody scanning the grid
     /// is looking for, so it is labelled and sorted below the games.
     public let launcher: LauncherType?
+    /// Set when the game has mods installed: which version this card starts.
+    public let mod: ModVariant?
 
     public var isLauncher: Bool { launcher != nil }
 
@@ -77,7 +94,8 @@ public struct LibraryEntry: Identifiable, Hashable, Sendable {
         bottleURL: URL,
         source: LibrarySourceID,
         launch: Launch,
-        launcher: LauncherType? = nil
+        launcher: LauncherType? = nil,
+        mod: ModVariant? = nil
     ) {
         self.id = id
         self.name = name
@@ -87,6 +105,7 @@ public struct LibraryEntry: Identifiable, Hashable, Sendable {
         self.source = source
         self.launch = launch
         self.launcher = launcher
+        self.mod = mod
     }
 }
 
@@ -135,7 +154,25 @@ public enum SteamLibrarySource: LibrarySource {
     /// it, which is the one part of building the library that touches disk.
     public static func entries(inBottleAt url: URL) -> [LibraryEntry] {
         let steamRoot = SteamLibrary.detectInstall(bottleURL: url)
-        return SteamLibrary.enumerate(bottleURL: url).map { game in
+        return SteamLibrary.enumerate(bottleURL: url).flatMap { game -> [LibraryEntry] in
+            let base = entry(for: game, bottleURL: url, steamRoot: steamRoot)
+            let mods = ModInstaller.installedModFolders(forGame: game.installURL)
+            guard !mods.isEmpty else { return [base] }
+            // A game with mods shows once per version: plain, then each mod.
+            let plain = base.with(name: base.name, idSuffix: "", mod: ModVariant(
+                gameFolder: game.installURL, modFolder: nil, modName: nil
+            ))
+            return [plain] + mods.map { mod in
+                base.with(
+                    name: "\(game.name) · \(mod.name)",
+                    idSuffix: ":mod:\(mod.folder.lastPathComponent)",
+                    mod: ModVariant(gameFolder: game.installURL, modFolder: mod.folder, modName: mod.name)
+                )
+            }
+        }
+    }
+
+    static func entry(for game: SteamGame, bottleURL url: URL, steamRoot: URL?) -> LibraryEntry {
             LibraryEntry(
                 // Scoped to the bottle, because the same game can be installed
                 // in two of them and an id shared by two rows breaks the grid's
@@ -149,7 +186,6 @@ public enum SteamLibrarySource: LibrarySource {
                 source: id,
                 launch: .steam(appID: game.appId)
             )
-        }
     }
 
     /// The best art Steam already cached for `appID`.
@@ -241,5 +277,14 @@ public enum LibraryCatalogue {
         }
 
         return items
+    }
+}
+
+extension LibraryEntry {
+    func with(name: String, idSuffix: String, mod: ModVariant) -> LibraryEntry {
+        LibraryEntry(
+            id: id + idSuffix, name: name, iconURL: iconURL, artworkURL: artworkURL,
+            bottleURL: bottleURL, source: source, launch: launch, launcher: launcher, mod: mod
+        )
     }
 }

@@ -138,7 +138,9 @@ public enum ModInstaller {
         rule: ModInstallRule, gameExecutable: URL
     ) async throws -> ModInstallResult {
         var gameFolder = gameExecutable.deletingLastPathComponent()
-        if rule.ownFolder {
+        if rule.frozenCopy {
+            gameFolder = try frozenCopy(of: gameFolder, for: name)
+        } else if rule.ownFolder {
             gameFolder = modFolder(for: name, game: gameFolder)
             try FileManager.default.createDirectory(at: gameFolder, withIntermediateDirectories: true)
         } else if rule.copyGame {
@@ -173,7 +175,7 @@ public enum ModInstaller {
             "Installed \(name, privacy: .public) (\(written.count) files) into \(gameFolder.path, privacy: .public)"
         )
         // A mod in its own folder runs through the game's own executable.
-        let executable = rule.ownFolder
+        let executable = rule.ownFolder && !rule.frozenCopy
             ? gameExecutable : gameFolder.appending(path: gameExecutable.lastPathComponent)
         return ModInstallResult(gameFolder: gameFolder, executable: executable, mod: mod)
     }
@@ -183,6 +185,19 @@ public enum ModInstaller {
         gameFolder.deletingLastPathComponent()
             .appending(path: "\(gameFolder.lastPathComponent) Mods")
             .appending(path: safeName(modName))
+    }
+
+    /// Mods installed in their own folders for the game at `gameFolder`, by name.
+    public static func installedModFolders(forGame gameFolder: URL) -> [(folder: URL, name: String)] {
+        let root = gameFolder.deletingLastPathComponent().appending(path: "\(gameFolder.lastPathComponent) Mods")
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+        return folders.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { folder in
+            let copy = folder.appending(path: "game")
+            if let mod = installedMods(in: copy).first { return (copy, mod.name) }
+            return installedMods(in: folder).first.map { (folder, $0.name) }
+        }
     }
 
     /// Copies the game to a sibling folder named after the mod, unless that copy exists already.
@@ -310,4 +325,50 @@ public enum ModInstaller {
             do { try process.run() } catch { continuation.resume(throwing: error) }
         }
     }
+}
+
+// MARK: - Frozen copies
+
+public extension ModInstaller {
+    /// The mod's frozen copy of the game: `<Game> Mods/<Mod>/game`, cloned from
+    /// the installed game when it doesn't exist yet. On APFS the clone shares
+    /// storage with the original until Steam changes it.
+    static func frozenCopy(of gameFolder: URL, for modName: String) throws -> URL {
+        let copy = modFolder(for: modName, game: gameFolder).appending(path: "game")
+        if !FileManager.default.fileExists(atPath: copy.path(percentEncoded: false)) {
+            try FileManager.default.createDirectory(
+                at: copy.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try FileManager.default.copyItem(at: gameFolder, to: copy)
+            for leftover in [manifestName, backupFolder, ".betterwhisky-loader"] {
+                try? FileManager.default.removeItem(at: copy.appending(path: leftover))
+            }
+            if let version = ModGameVersion.installed(gameFolder: copy) {
+                try? Data(version.utf8).write(to: copy.appending(path: ".betterwhisky-game-version"))
+            }
+        }
+        return copy
+    }
+
+    /// The game's own executable in `folder`: a top-level .exe that isn't a
+    /// crash reporter or uninstaller.
+    static func mainExecutable(in folder: URL, preferring name: String? = nil) -> URL? {
+        if let name {
+            let url = folder.appending(path: name)
+            if FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) { return url }
+        }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? []
+        return names.filter { $0.lowercased().hasSuffix(".exe") }
+            .filter { name in !["crash", "unins", "redist", "setup"].contains { name.lowercased().contains($0) } }
+            .sorted()
+            .first
+            .map { folder.appending(path: $0) }
+    }
+
+    /// The game version a frozen copy was made at.
+    static func frozenVersion(_ copy: URL) -> String? {
+        (try? Data(contentsOf: copy.appending(path: ".betterwhisky-game-version")))
+            .flatMap { String(data: $0, encoding: .utf8) }
+    }
+
 }

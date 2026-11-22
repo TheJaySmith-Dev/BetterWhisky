@@ -123,7 +123,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
             if isOn {
                 Button("Play") { play(preset, modFolder: current.folder) }
                     .disabled(busy != nil)
-            } else if preset.install.ownFolder {
+            } else if preset.install.ownFolder || preset.install.frozenCopy {
                 Button("Turn On") { switchOn(current.folder) }
                     .disabled(busy != nil)
             }
@@ -299,7 +299,9 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     /// A preset may live in a copy of the game folder rather than this one.
     private func installedPreset(_ preset: ModPreset) -> (mod: InstalledMod, folder: URL)? {
         var folders = [gameFolder]
-        if preset.install.ownFolder {
+        if preset.install.frozenCopy {
+            folders.insert(ModInstaller.modFolder(for: preset.name, game: gameFolder).appending(path: "game"), at: 0)
+        } else if preset.install.ownFolder || preset.install.frozenCopy {
             folders.insert(ModInstaller.modFolder(for: preset.name, game: gameFolder), at: 0)
         } else if preset.install.copyGame, let copy = try? copyFolder(for: preset.name) {
             folders.insert(copy, at: 0)
@@ -312,6 +314,14 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         return nil
     }
 
+    /// The Steam app this game is, from its presets.
+    private var steamAppId: Int? { presets.first { $0.steamAppId != nil }?.steamAppId }
+
+    /// A mod's frozen copy of the game lives in `<Game> Mods/<Mod>/game`.
+    private func isFrozenCopy(_ folder: URL) -> Bool {
+        folder.lastPathComponent == "game" && folder != gameFolder
+    }
+
     private func copyFolder(for modName: String) throws -> URL {
         gameFolder.deletingLastPathComponent()
             .appending(path: "\(gameFolder.lastPathComponent) - \(ModInstaller.safeName(modName))")
@@ -319,7 +329,12 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
 
     private func refresh() async {
         installed = ModInstaller.installedMods(in: gameFolder)
-        activeMod = ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: program.bottle.url)
+        if let appId = steamAppId,
+           let selected = SteamModLauncher.selected(appId: appId, bottleURL: program.bottle.url) {
+            activeMod = selected.deletingLastPathComponent()
+        } else {
+            activeMod = ModLoaderRedirect.activeModFolder(gameFolder: gameFolder, bottleURL: program.bottle.url)
+        }
         modsChanged += 1
         for preset in presets where latestVersions[preset.repo] == nil {
             latestVersions[preset.repo] = try? await GitHubReleases.latestRelease(repo: preset.repo)
@@ -337,7 +352,8 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                 async let readme = GitHubReleases.readme(repo: preset.repo)
                 let release = try await GitHubReleases.latestRelease(repo: preset.repo)
                 latestVersions[preset.repo] = release
-                let plan = ModReadmePlanner.plan(readme: try? await readme, release: release, repo: preset.repo)
+                let readmeText = try? await readme
+                let plan = ModReadmePlanner.plan(readme: readmeText, release: release, repo: preset.repo)
                 guard let asset = release.assets.first(where: { preset.matchesAsset(named: $0.name) })
                     ?? plan?.asset else {
                     message = "\(preset.name) \(release.tagName) has no file to install."
@@ -348,6 +364,11 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                     rule = plan.rule
                     rule.copyGame = rule.copyGame || preset.install.copyGame
                     rule.ownFolder = preset.install.ownFolder
+                    rule.frozenCopy = preset.install.frozenCopy
+                }
+                if preset.install.frozenCopy,
+                   !prepareFrozenCopy(for: preset, release: release, readme: readmeText) {
+                    return
                 }
                 install(
                     asset: asset, release: release, name: preset.name, repo: preset.repo,
@@ -356,6 +377,36 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
             } catch {
                 message = error.localizedDescription
             }
+        }
+    }
+
+    /// Decides whether this release can go in, by the game version it needs:
+    /// a fresh copy of the current game, the frozen copy as it is, or not at all.
+    private func prepareFrozenCopy(for preset: ModPreset, release: GitHubRelease, readme: String?) -> Bool {
+        let text = [release.body, readme].compactMap { $0 }.joined(separator: "\n")
+        let required = ModGameVersion.required(in: text, modVersion: release.tagName)
+        let game = ModGameVersion.installed(gameFolder: gameFolder)
+        let copy = ModInstaller.modFolder(for: preset.name, game: gameFolder).appending(path: "game")
+        let hasCopy = FileManager.default.fileExists(atPath: copy.path(percentEncoded: false))
+        switch ModGameVersion.decide(
+            required: required, game: game, copy: hasCopy ? ModInstaller.frozenVersion(copy) : nil, hasCopy: hasCopy
+        ) {
+        case .blocked(let required, let game):
+            message = "\(preset.name) \(release.tagName) needs Among Us \(required), and this is \(game). "
+                + "Wait for a mod update that supports \(game)."
+            return false
+        case .keep(let required):
+            message = "\(preset.name) \(release.tagName) is for Among Us \(required). Keeping the version you have."
+            return false
+        case .install(let freshCopy):
+            if freshCopy, hasCopy {
+                if let appId = steamAppId, SteamModLauncher.selected(appId: appId, bottleURL: program.bottle.url)?
+                    .path.hasPrefix(copy.path) == true {
+                    try? SteamModLauncher.select(nil, appId: appId, bottleURL: program.bottle.url)
+                }
+                try? FileManager.default.removeItem(at: copy.deletingLastPathComponent())
+            }
+            return true
         }
     }
 
@@ -413,7 +464,12 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
 
     private func finished(_ result: ModInstallResult, notes: [String] = []) {
         useModLoader(in: result)
-        if result.executable == program.url, result.gameFolder != gameFolder {
+        if isFrozenCopy(result.gameFolder) {
+            switchOn(result.gameFolder)
+            let version = ModInstaller.frozenVersion(result.gameFolder).map { " for Among Us \($0)" } ?? ""
+            message = "Installed \(result.mod.name)\(version). It's in the Library as its own game. "
+                + "The first start takes a few minutes."
+        } else if result.executable == program.url, result.gameFolder != gameFolder {
             // A mod in its own folder: switch the game's loader over to it.
             do {
                 try ModLoaderRedirect.activate(
@@ -448,6 +504,29 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     /// game the way its preset says: through Steam for Steam games, whose
     /// sign-in only works when Steam launches them.
     private func play(_ preset: ModPreset, modFolder: URL?) {
+        if let appId = preset.steamAppId, modFolder.map(isFrozenCopy) ?? true, preset.install.frozenCopy {
+            Task {
+                do {
+                    busy = modFolder == nil ? nil : "Getting Steam ready…"
+                    defer { busy = nil }
+                    if let modFolder {
+                        try await SteamModLauncher.prepare(appId: appId, bottle: program.bottle)
+                        try SteamModLauncher.select(
+                            ModInstaller.mainExecutable(in: modFolder, preferring: program.name),
+                            appId: appId, bottleURL: program.bottle.url
+                        )
+                    } else {
+                        try SteamModLauncher.select(nil, appId: appId, bottleURL: program.bottle.url)
+                    }
+                    try SteamLauncher.launch(appId: appId, bottle: program.bottle)
+                    message = "Starting \(modFolder == nil ? program.name : preset.name) through Steam…"
+                } catch {
+                    message = error.localizedDescription
+                }
+                await refresh()
+            }
+            return
+        }
         do {
             if let modFolder {
                 try ModLoaderRedirect.activate(
@@ -469,10 +548,26 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     }
 
     private func isActive(_ folder: URL) -> Bool {
-        activeMod != nil && ModLoaderRedirect.pointsAt(folder, gameFolder: gameFolder, bottleURL: program.bottle.url)
+        if isFrozenCopy(folder) {
+            return activeMod?.standardizedFileURL.path == folder.standardizedFileURL.path
+        }
+        return activeMod != nil
+            && ModLoaderRedirect.pointsAt(folder, gameFolder: gameFolder, bottleURL: program.bottle.url)
     }
 
     private func switchOn(_ folder: URL) {
+        if isFrozenCopy(folder), let appId = steamAppId {
+            do {
+                try SteamModLauncher.select(
+                    ModInstaller.mainExecutable(in: folder, preferring: program.name),
+                    appId: appId, bottleURL: program.bottle.url
+                )
+            } catch {
+                message = error.localizedDescription
+            }
+            Task { await refresh() }
+            return
+        }
         do {
             try ModLoaderRedirect.activate(modFolder: folder, gameFolder: gameFolder, bottleURL: program.bottle.url)
             message = nil
@@ -484,6 +579,9 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
 
     private func turnOffMods() {
         do {
+            if let appId = steamAppId {
+                try SteamModLauncher.select(nil, appId: appId, bottleURL: program.bottle.url)
+            }
             try ModLoaderRedirect.deactivate(gameFolder: gameFolder)
             message = nil
         } catch {
@@ -575,6 +673,21 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     private func remove(_ mod: InstalledMod, in folder: URL? = nil) {
         do {
             let folder = folder ?? gameFolder
+            if isFrozenCopy(folder) {
+                if let appId = steamAppId, activeMod?.standardizedFileURL.path == folder.standardizedFileURL.path {
+                    try SteamModLauncher.select(nil, appId: appId, bottleURL: program.bottle.url)
+                }
+                let modFolder = folder.deletingLastPathComponent()
+                try FileManager.default.removeItem(at: modFolder)
+                let modsRoot = modFolder.deletingLastPathComponent()
+                if (try? FileManager.default.contentsOfDirectory(atPath: modsRoot.path(percentEncoded: false)))?
+                    .filter({ !$0.hasPrefix(".") }).isEmpty == true {
+                    try? FileManager.default.removeItem(at: modsRoot)
+                }
+                message = "Removed \(mod.name)."
+                Task { await refresh() }
+                return
+            }
             try ModInstaller.uninstall(mod, from: folder)
             if folder != gameFolder, folder.deletingLastPathComponent().lastPathComponent.hasSuffix(" Mods") {
                 if ModLoaderRedirect.pointsAt(folder, gameFolder: gameFolder, bottleURL: program.bottle.url) {
