@@ -83,6 +83,8 @@ public struct LibraryEntry: Identifiable, Hashable, Sendable {
     public let launcher: LauncherType?
     /// Set when the game has mods installed: which version this card starts.
     public let mod: ModVariant?
+    /// A transparent logo to show instead of the name, when there is one.
+    public let logoURL: URL?
 
     public var isLauncher: Bool { launcher != nil }
 
@@ -95,7 +97,8 @@ public struct LibraryEntry: Identifiable, Hashable, Sendable {
         source: LibrarySourceID,
         launch: Launch,
         launcher: LauncherType? = nil,
-        mod: ModVariant? = nil
+        mod: ModVariant? = nil,
+        logoURL: URL? = nil
     ) {
         self.id = id
         self.name = name
@@ -106,6 +109,7 @@ public struct LibraryEntry: Identifiable, Hashable, Sendable {
         self.launch = launch
         self.launcher = launcher
         self.mod = mod
+        self.logoURL = logoURL
     }
 }
 
@@ -163,10 +167,12 @@ public enum SteamLibrarySource: LibrarySource {
                 gameFolder: game.installURL, modFolder: nil, modName: nil
             ))
             return [plain] + mods.map { mod in
-                base.with(
+                let logo = ModPreset.logoURL(modFolder: mod.folder.deletingLastPathComponent())
+                return base.with(
                     name: "\(game.name) · \(mod.name)",
                     idSuffix: ":mod:\(mod.folder.lastPathComponent)",
-                    mod: ModVariant(gameFolder: game.installURL, modFolder: mod.folder, modName: mod.name)
+                    mod: ModVariant(gameFolder: game.installURL, modFolder: mod.folder, modName: mod.name),
+                    logoURL: FileManager.default.fileExists(atPath: logo.path(percentEncoded: false)) ? logo : nil
                 )
             }
         }
@@ -181,11 +187,40 @@ public enum SteamLibrarySource: LibrarySource {
                 id: "steam:\(url.path(percentEncoded: false)):\(game.appId)",
                 name: game.name,
                 iconURL: steamRoot.flatMap { iconURL(appID: game.appId, steamRoot: $0) },
-                artworkURL: steamRoot.flatMap { artworkURL(appID: game.appId, steamRoot: $0) },
+                // With a logo on top, the logo-free hero art; otherwise the header,
+                // which has the game's name painted in.
+                artworkURL: steamRoot.flatMap { root in
+                    logoURL(appID: game.appId, steamRoot: root) != nil
+                        ? heroURL(appID: game.appId, steamRoot: root) ?? artworkURL(appID: game.appId, steamRoot: root)
+                        : artworkURL(appID: game.appId, steamRoot: root)
+                },
                 bottleURL: url,
                 source: id,
-                launch: .steam(appID: game.appId)
+                launch: .steam(appID: game.appId),
+                logoURL: steamRoot.flatMap { logoURL(appID: game.appId, steamRoot: $0) }
             )
+    }
+
+    /// Steam's background art for the game's library page, made to sit under its logo.
+    public static func heroURL(appID: Int, steamRoot: URL) -> URL? {
+        cachedFile(named: "library_hero.jpg", appID: appID, steamRoot: steamRoot)
+    }
+
+    static func cachedFile(named name: String, appID: Int, steamRoot: URL) -> URL? {
+        let folder = steamRoot.appending(path: "appcache/librarycache/\(appID)")
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else {
+            return nil
+        }
+        return walker.compactMap { $0 as? URL }.first { $0.lastPathComponent.lowercased() == name }
+    }
+
+    /// The game's transparent logo from Steam's cache, the one its library page uses.
+    public static func logoURL(appID: Int, steamRoot: URL) -> URL? {
+        let folder = steamRoot.appending(path: "appcache/librarycache/\(appID)")
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else {
+            return nil
+        }
+        return walker.compactMap { $0 as? URL }.first { $0.lastPathComponent.lowercased() == "logo.png" }
     }
 
     /// The best art Steam already cached for `appID`.
@@ -281,10 +316,11 @@ public enum LibraryCatalogue {
 }
 
 extension LibraryEntry {
-    func with(name: String, idSuffix: String, mod: ModVariant) -> LibraryEntry {
+    func with(name: String, idSuffix: String, mod: ModVariant, logoURL: URL? = nil) -> LibraryEntry {
         LibraryEntry(
             id: id + idSuffix, name: name, iconURL: iconURL, artworkURL: artworkURL,
-            bottleURL: bottleURL, source: source, launch: launch, launcher: launcher, mod: mod
+            bottleURL: bottleURL, source: source, launch: launch, launcher: launcher, mod: mod,
+            logoURL: logoURL ?? self.logoURL
         )
     }
 }

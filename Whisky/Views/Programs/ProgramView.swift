@@ -207,6 +207,7 @@ struct GameHeaderView: View {
     @State private var steamAppId: Int?
     @State private var activeMod: String?
     @State private var launching = false
+    @State private var showMods = false
 
     private var title: String {
         program.name.replacingOccurrences(of: ".exe", with: "", options: [.caseInsensitive, .anchored, .backwards])
@@ -232,6 +233,11 @@ struct GameHeaderView: View {
                     modLine
                 }
                 Spacer(minLength: 16)
+                Button("Mods", systemImage: "gearshape") { showMods = true }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .help("Mod settings")
                 Button(action: play) {
                     Label("Play", systemImage: "play.fill")
                         .padding(.horizontal, 8)
@@ -247,6 +253,9 @@ struct GameHeaderView: View {
         .frame(height: 180)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .task(id: "\(program.url.path)#\(modsChanged)") { await load() }
+        .sheet(isPresented: $showMods, onDismiss: { Task { await load() } }, content: {
+            ModPickerSheet(program: program)
+        })
     }
 
     /// The signature detail: a dot and the mod's name whenever one is on.

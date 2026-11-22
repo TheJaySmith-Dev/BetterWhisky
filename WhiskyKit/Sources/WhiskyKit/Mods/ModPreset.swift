@@ -94,11 +94,13 @@ public struct ModPreset: Codable, Hashable, Sendable, Identifiable {
     /// The game's Steam App ID, for ``ModLaunchMethod/steam``.
     public var steamAppId: Int?
     public var launch: ModLaunchMethod
+    /// The mod's logo, as a path in its repository, shown on its Library card.
+    public var logoPath: String?
 
     public init(
         name: String, repo: String, gameExecutables: [String], assetPattern: String,
         install: ModInstallRule, requires: [String] = [], notes: String? = nil,
-        steamAppId: Int? = nil, launch: ModLaunchMethod = .direct
+        steamAppId: Int? = nil, launch: ModLaunchMethod = .direct, logoPath: String? = nil
     ) {
         self.name = name
         self.repo = repo
@@ -109,6 +111,7 @@ public struct ModPreset: Codable, Hashable, Sendable, Identifiable {
         self.notes = notes
         self.steamAppId = steamAppId
         self.launch = launch
+        self.logoPath = logoPath
     }
 
     public func matches(executable url: URL) -> Bool {
@@ -148,7 +151,7 @@ public extension ModPreset {
             assetPattern: #"-x64-Steam-Epic-MsStore\.zip$"#,
             install: ModInstallRule(mode: .extract, frozenCopy: true),
             notes: "Ships with BepInEx. The first launch can take a few minutes.",
-            steamAppId: 945360, launch: .steam
+            steamAppId: 945360, launch: .steam, logoPath: "Images/Logo.png"
         ),
         ModPreset(
             name: "The Other Roles",
@@ -163,5 +166,21 @@ public extension ModPreset {
 
     static func presets(for executable: URL) -> [ModPreset] {
         builtIn.filter { $0.matches(executable: executable) }
+    }
+}
+
+public extension ModPreset {
+    /// Where a mod's logo is kept, beside its frozen copy of the game.
+    static func logoURL(modFolder: URL) -> URL {
+        modFolder.appending(path: ".betterwhisky-logo.png")
+    }
+
+    /// Saves the mod's logo from its repository into `modFolder`.
+    func downloadLogo(into modFolder: URL) async {
+        guard let logoPath,
+              let url = URL(string: "https://raw.githubusercontent.com/\(repo)/HEAD/\(logoPath)"),
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+        try? data.write(to: Self.logoURL(modFolder: modFolder), options: .atomic)
     }
 }

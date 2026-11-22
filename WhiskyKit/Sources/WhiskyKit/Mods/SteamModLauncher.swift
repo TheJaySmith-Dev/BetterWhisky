@@ -67,6 +67,23 @@ public enum SteamModLauncher {
         return ModLoaderRedirect.unixPath(path, bottleURL: bottleURL)
     }
 
+    /// The "Reduce memory use" setting for modded starts; on unless turned off.
+    public static let reduceMemoryKey = "modsReduceMemory"
+    static var reduceMemory: Bool {
+        UserDefaults.standard.object(forKey: reduceMemoryKey) as? Bool ?? true
+    }
+
+    /// Rewrites every launcher script in the bottle, after a setting changes.
+    public static func refreshScripts(bottleURL: URL) {
+        let path = folder(bottleURL).path(percentEncoded: false)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+        for name in names where name.hasPrefix("launch-") && name.hasSuffix(".bat") {
+            if let appId = Int(name.dropFirst("launch-".count).dropLast(".bat".count)) {
+                try? writeScript(appId: appId, bottleURL: bottleURL)
+            }
+        }
+    }
+
     static func writeScript(appId: Int, bottleURL: URL) throws {
         try FileManager.default.createDirectory(at: folder(bottleURL), withIntermediateDirectories: true)
         let target = #"C:\BetterWhisky\target-\#(appId).txt"#
@@ -75,7 +92,7 @@ public enum SteamModLauncher {
             "setlocal",
             // Modded copies run their mods on .NET: keep its heap smaller. A
             // plain game doesn't run .NET, so this changes nothing for it.
-            #"if exist "\#(target)" set "DOTNET_GCConserveMemory=7""#,
+            reduceMemory ? #"if exist "\#(target)" set "DOTNET_GCConserveMemory=7""# : "rem memory: default",
             #"set "TARGET=""#,
             #"if exist "\#(target)" set /p TARGET=<"\#(target)""#,
             "if defined TARGET (",

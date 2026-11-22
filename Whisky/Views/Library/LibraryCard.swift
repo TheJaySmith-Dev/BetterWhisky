@@ -50,9 +50,12 @@ struct LibraryCard: View {
     let lastPlayed: Date?
     let state: LibraryEntryState
     let launch: () -> Void
+    /// Opens the game's mod settings; nil for entries without mods.
+    var onSettings: (() -> Void)?
 
     @State private var icon: Image?
     @State private var artwork: Image?
+    @State private var logo: Image?
     @State private var palette: IconPalette = .neutral
     @State private var isHovering = false
     @FocusState private var isFocused: Bool
@@ -73,11 +76,32 @@ struct LibraryCard: View {
     /// executable, which is how the Steam client ends up on screen as "steam".
     private var title: String { item.launcher?.displayName ?? item.name }
 
+    /// The round controls (30pt) sit `controlInset` from the edges, and the
+    /// card's corners are concentric with them: 15 + 6.
+    static let controlInset: CGFloat = 6
+    static let cornerRadius: CGFloat = 15 + controlInset
+
     var body: some View {
         Button(action: launch) {
             card
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topLeading) {
+            // Settings in the top-left, Play in the top-right: the same round
+            // control, shown together on hover.
+            if let onSettings, isActive {
+                Button(action: onSettings) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 13))
+                        .frame(width: 30, height: 30)
+                        .cardGlass(.circle, interactive: true)
+                }
+                .buttonStyle(.plain)
+                .help("Mod settings")
+                .padding(Self.controlInset)
+                .transition(.opacity.combined(with: .scale))
+            }
+        }
         .focusable()
         .focused($isFocused)
         // The system ring is a rectangle around the button's frame, so on a
@@ -92,6 +116,7 @@ struct LibraryCard: View {
             withAnimation(.easeOut(duration: 0.16)) { isHovering = hovering }
         }
         .task(id: item.id) {
+            await loadLogo()
             await loadIcon()
         }
         .accessibilityLabel(title)
@@ -104,6 +129,42 @@ struct LibraryCard: View {
     private var isActive: Bool { isHovering || isFocused }
 
     private var card: some View {
+        Group {
+            if let logoView {
+                logoCard(logoView)
+            } else {
+                artCard
+            }
+        }
+        .frame(height: 132)
+        .overlay(alignment: .topTrailing) {
+            statusView.padding(Self.controlInset)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .strokeBorder(.primary.opacity(isActive ? 0.2 : 0.08), lineWidth: 1)
+        }
+        .overlay {
+            if isFocused {
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+            }
+        }
+    }
+
+    /// A game with a logo: the logo alone, centred on a quiet surface.
+    private func logoCard(_ logo: AnyView) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .fill(.quaternary.opacity(isActive ? 1 : 0.7))
+            logo
+                .padding(.horizontal, 44)
+                .padding(.vertical, 28)
+        }
+    }
+
+    private var artCard: some View {
         ZStack(alignment: .topLeading) {
             LinearGradient(
                 colors: [backdrop, backdropDeep],
@@ -143,7 +204,6 @@ struct LibraryCard: View {
                         iconView
                     }
                     Spacer()
-                    statusView
                 }
                 Spacer(minLength: 8)
                 if let modName = item.mod?.modName {
@@ -172,20 +232,6 @@ struct LibraryCard: View {
         // Artwork brings its own scrim, so a card showing art is always dark
         // under the label whatever the sampled palette says.
         .foregroundStyle(artwork == nil ? foreground : .white)
-        .frame(height: 132)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.white.opacity(isActive ? 0.22 : 0.08), lineWidth: 1)
-        }
-        .overlay {
-            if isFocused {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
-            }
-        }
-        .shadow(color: .black.opacity(isActive ? 0.28 : 0.16), radius: isActive ? 10 : 5, y: 3)
-        .scaleEffect(isActive ? 1.015 : 1)
     }
 
     /// The top-right corner: what it is doing, or the offer to start it.
@@ -209,20 +255,11 @@ struct LibraryCard: View {
                 .cardGlass(.capsule)
         case .idle:
             if isActive {
-                if item.mod?.modFolder != nil {
-                    Label("Play Mod", systemImage: "play.fill")
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 12)
-                        .frame(height: 28)
-                        .cardGlass(.capsule, interactive: true)
-                        .transition(.opacity)
-                } else {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 13))
-                        .frame(width: 30, height: 30)
-                        .cardGlass(.circle, interactive: true)
-                        .transition(.opacity.combined(with: .scale))
-                }
+                Image(systemName: "play.fill")
+                    .font(.system(size: 13))
+                    .frame(width: 30, height: 30)
+                    .cardGlass(.circle, interactive: true)
+                    .transition(.opacity.combined(with: .scale))
             }
         }
     }
@@ -239,6 +276,17 @@ struct LibraryCard: View {
                 .fill(.white.opacity(0.12))
                 .frame(width: 44, height: 44)
         }
+    }
+
+    /// The game's or mod's own logo: from Steam's cache, the mod's repository,
+    /// or, for Steam itself, the one that ships with the app.
+    private var logoView: AnyView? {
+        if item.launcher == .steam {
+            return AnyView(Image("SteamLogo").resizable().renderingMode(.template).scaledToFit()
+                .foregroundStyle(.primary))
+        }
+        guard let logo else { return nil }
+        return AnyView(logo.resizable().scaledToFit())
     }
 
     /// A modded card shows the game's name, with the mod on the line above.
@@ -270,6 +318,12 @@ struct LibraryCard: View {
 
     /// Decoding and palette sampling both happen inside ``IconCache``, which is
     /// where the reasoning about repeating them lives.
+    private func loadLogo() async {
+        guard let url = item.logoURL,
+              let image = await Task.detached(operation: { NSImage(contentsOf: url) }).value else { return }
+        logo = Image(nsImage: image)
+    }
+
     private func loadIcon() async {
         if let artworkURL = item.artworkURL,
            let sampled = await IconCache.shared.sampledArtwork(for: artworkURL) {

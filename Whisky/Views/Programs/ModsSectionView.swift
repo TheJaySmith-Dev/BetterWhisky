@@ -447,6 +447,9 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                     rule: rule, gameExecutable: program.url
                 )
                 let notes = await installDependencies(dependencies, into: result, seen: [repo.lowercased()])
+                if isFrozenCopy(result.gameFolder), let preset = presets.first(where: { $0.repo == repo }) {
+                    await preset.downloadLogo(into: result.gameFolder.deletingLastPathComponent())
+                }
                 finished(result, notes: notes)
             } catch {
                 message = error.localizedDescription

@@ -166,3 +166,44 @@ struct LaunchProgressView: View {
         artwork = await IconCache.shared.sampledArtwork(for: url)?.image
     }
 }
+
+/// A game's mod settings: which mod is on, installing and removing mods, and
+/// options that apply to every modded start.
+struct ModPickerSheet: View {
+    @ObservedObject var program: Program
+    @Environment(\.dismiss) private var dismiss
+    @State private var expanded = true
+    @State private var modsChanged = 0
+    @AppStorage(SteamModLauncher.reduceMemoryKey) private var reduceMemory = true
+
+    private var title: String {
+        program.name.replacingOccurrences(of: ".exe", with: "", options: [.caseInsensitive, .backwards])
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                ModsSectionView(program: program, isExpanded: $expanded, modsChanged: $modsChanged)
+                Section("Options") {
+                    Toggle(isOn: $reduceMemory) {
+                        Text("Reduce memory use")
+                        Text("Keeps the mod's .NET memory smaller. Turn off if a mod misbehaves.")
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+        }
+        .navigationTitle("Mods for \(title)")
+        .frame(width: 520, height: 560)
+        .onChange(of: reduceMemory) {
+            // The launcher script carries the setting, so rewrite it now.
+            SteamModLauncher.refreshScripts(bottleURL: program.bottle.url)
+        }
+    }
+}

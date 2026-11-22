@@ -40,6 +40,8 @@ struct LibraryView: View {
     @AppStorage("librarySort") private var sort: LibrarySort = .recent
 
     @StateObject private var model = LibraryModel()
+
+    @State private var modsProgram: Program?
     @State private var search: String = ""
 
     private var bottles: [Bottle] { bottleVM.bottles.filter(\.isAvailable) }
@@ -68,6 +70,9 @@ struct LibraryView: View {
         .navigationTitle("library.title")
         .searchable(text: $search, prompt: Text("library.search"))
         .toolbar { sortMenu }
+        .sheet(item: $modsProgram, onDismiss: { refresh.toggle() }, content: { program in
+            ModPickerSheet(program: program)
+        })
         .sheet(item: $model.launchRequest) { request in
             LaunchProgressView(request: request) { model.launchRequest = nil }
         }
@@ -137,7 +142,8 @@ struct LibraryView: View {
                         bottleName: row.bottleName,
                         lastPlayed: row.lastPlayed,
                         state: model.state(for: row.item),
-                        launch: { model.launch(row, bottles: bottles) }
+                        launch: { model.launch(row, bottles: bottles) },
+                        onSettings: settingsAction(for: row)
                     )
                     .contextMenu { menu(for: row) }
                 }
@@ -159,12 +165,32 @@ struct LibraryView: View {
             }
             Button("library.card.unpin", role: .destructive) { unpin(url, in: row.item.bottleURL) }
         }
+        if case let .steam(appID) = row.item.launch, let program = gameProgram(appID, in: row.item.bottleURL) {
+            Button("Mods…") { modsProgram = program }
+        }
         // Per-program settings live inside the bottle's own navigation stack,
         // which the library cannot push onto, so this is as close as the menu
         // gets without a deep link into it.
         Button("library.card.configure") {
             selectedBottle = row.item.bottleURL
         }
+    }
+
+    private func settingsAction(for row: LibraryRow) -> (() -> Void)? {
+        guard case let .steam(appID) = row.item.launch,
+              !ModPreset.builtIn.filter({ $0.steamAppId == appID }).isEmpty else { return nil }
+        return {
+            if let program = gameProgram(appID, in: row.item.bottleURL) { modsProgram = program }
+        }
+    }
+
+    /// The game Steam installed, as a program, for its mod settings.
+    private func gameProgram(_ appID: Int, in bottleURL: URL) -> Program? {
+        guard let bottle = bottles.first(where: { $0.url == bottleURL }),
+              let game = SteamLibrary.enumerate(bottleURL: bottleURL).first(where: { $0.appId == appID }),
+              !ModPreset.builtIn.filter({ $0.steamAppId == appID }).isEmpty,
+              let exe = ModInstaller.mainExecutable(in: game.installURL) else { return nil }
+        return bottle.programs.first { $0.url == exe } ?? Program(url: exe, bottle: bottle)
     }
 
     private func unpin(_ url: URL, in bottleURL: URL) {
