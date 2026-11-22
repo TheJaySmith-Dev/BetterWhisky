@@ -400,8 +400,12 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         }
         for repo in deps.repos where depth < 3 && !seen.contains(repo.lowercased()) {
             seen.insert(repo.lowercased())
+            let name = repo.components(separatedBy: "/").last ?? repo
             let present = ModInstaller.installedMods(in: result.gameFolder)
-            if present.contains(where: { $0.repo.lowercased() == repo.lowercased() }) { continue }
+            if present.contains(where: { $0.repo.lowercased() == repo.lowercased() })
+                || ModInstaller.bundles(plugin: name, in: result.gameFolder) {
+                continue
+            }
             busy = "Installing dependency \(repo)…"
             do {
                 async let readme = GitHubReleases.readme(repo: repo)
@@ -415,10 +419,10 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                 if plan.asset.name.lowercased().hasSuffix(".dll"), ModInstaller.hasBepInEx(result.gameFolder) {
                     rule.subpath = "BepInEx/plugins"
                 }
-                let name = repo.components(separatedBy: "/").last ?? repo
+                // Into the mod's folder, next to the loader it plugs into.
                 _ = try await ModInstaller.install(
                     asset: plan.asset, version: release.tagName, name: name, repo: repo,
-                    rule: rule, gameExecutable: result.executable
+                    rule: rule, gameExecutable: result.gameFolder.appending(path: result.executable.lastPathComponent)
                 )
                 notes.append("Installed dependency \(name) \(release.tagName).")
                 notes += await installDependencies(plan.dependencies, into: result, seen: seen, depth: depth + 1)

@@ -115,6 +115,17 @@ public enum ModInstaller {
         try writeManifest(installedMods(in: gameFolder).filter { $0.repo != mod.repo }, to: gameFolder)
     }
 
+    /// Whether the folder's BepInEx plugins already hold `<name>.dll`, as when
+    /// a mod's download bundles a library its README lists as a dependency.
+    public static func bundles(plugin name: String, in folder: URL) -> Bool {
+        let plugins = folder.appending(path: "BepInEx/plugins")
+        guard let walker = FileManager.default.enumerator(at: plugins, includingPropertiesForKeys: nil) else {
+            return false
+        }
+        let wanted = name.lowercased() + ".dll"
+        return walker.contains { ($0 as? URL)?.lastPathComponent.lowercased() == wanted }
+    }
+
     public static func hasBepInEx(_ gameFolder: URL) -> Bool {
         FileManager.default.fileExists(atPath: gameFolder.appending(path: "BepInEx").path(percentEncoded: false))
     }

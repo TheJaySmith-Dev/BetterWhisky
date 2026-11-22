@@ -306,6 +306,10 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
                 // Skip known launcher helpers and crash reporters that pollute the list
                 guard !noiseExecutableNames.contains(url.lastPathComponent.lowercased()) else { continue }
                 guard !blocklist.contains(url) else { continue }
+                // Mods installed in their own folder ("<Game> Mods/<Mod>") run
+                // through the game's executable; their helper .exe files
+                // (BepInEx's splash screen, say) aren't programs of their own.
+                guard !url.pathComponents.contains(where: { $0.hasSuffix(" Mods") }) else { continue }
                 found.append(url)
             }
         }
