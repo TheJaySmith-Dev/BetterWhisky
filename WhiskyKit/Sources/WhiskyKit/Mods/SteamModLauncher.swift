@@ -73,6 +73,9 @@ public enum SteamModLauncher {
         let script = [
             "@echo off",
             "setlocal",
+            // Modded copies run their mods on .NET: keep its heap smaller. A
+            // plain game doesn't run .NET, so this changes nothing for it.
+            #"if exist "\#(target)" set "DOTNET_GCConserveMemory=7""#,
             #"set "TARGET=""#,
             #"if exist "\#(target)" set /p TARGET=<"\#(target)""#,
             "if defined TARGET (",
