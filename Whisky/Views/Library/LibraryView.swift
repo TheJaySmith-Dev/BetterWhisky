@@ -68,7 +68,16 @@ struct LibraryView: View {
         .navigationTitle("library.title")
         .searchable(text: $search, prompt: Text("library.search"))
         .toolbar { sortMenu }
+        .sheet(item: $model.launchRequest) { request in
+            LaunchProgressView(request: request) { model.launchRequest = nil }
+        }
         .toast($model.toast)
+        .task {
+            // Steam starts slowly under Wine; get it signed in before it's needed.
+            await SteamModLauncher.warmUp(bottles: bottles)
+            // Mods updated since their last start load faster once pre-compiled.
+            await ModPrecompiler.runWhereNeeded(bottles: bottles)
+        }
         .task(id: reloadTrigger) {
             await model.reload(bottles: bottles)
             // Mods move to their latest release on their own, at most every few hours.

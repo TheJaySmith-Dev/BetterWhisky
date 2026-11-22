@@ -150,6 +150,40 @@ public enum SteamModLauncher {
         try setLaunchOption(appId: appId, bottleURL: bottle.url)
     }
 
+    /// BepInEx starts from its own winhttp.dll, which Wine skips for its
+    /// built-in one unless told otherwise. Steam launches take a game's DLL
+    /// settings from the game Steam installed, keyed by executable name, so the
+    /// setting goes there: it then covers the modded copy too, and the plain
+    /// game, which has no winhttp.dll of its own, keeps Wine's.
+    @MainActor
+    public static func ensureLoaderOverride(gameExecutable: URL, bottle: Bottle) {
+        let program = bottle.programs.first { $0.url == gameExecutable } ?? Program(url: gameExecutable, bottle: bottle)
+        var overrides = program.settings.overrides ?? ProgramOverrides()
+        var dlls = overrides.dllOverrides ?? []
+        guard !dlls.contains(where: { $0.dllName.lowercased() == "winhttp" && $0.mode == .nativeThenBuiltin }) else {
+            return
+        }
+        dlls.removeAll { $0.dllName.lowercased() == "winhttp" }
+        dlls.append(DLLOverrideEntry(dllName: "winhttp", mode: .nativeThenBuiltin))
+        overrides.dllOverrides = dlls
+        program.settings.overrides = overrides
+    }
+
+    /// Starts Steam quietly in each bottle that has it, so it's signed in by the
+    /// time a game is launched. A cold start under Wine takes a minute or two,
+    /// most of the wait before a game appears; a running client hands the game
+    /// over in seconds. Does nothing where Steam is already running.
+    @MainActor
+    public static func warmUp(bottles: [Bottle]) async {
+        guard !(await isSteamRunning()) else { return }
+        for bottle in bottles {
+            guard let steam = SteamLibrary.detectInstall(bottleURL: bottle.url),
+                  !SteamLibrary.enumerate(bottleURL: bottle.url).isEmpty else { continue }
+            SteamLauncher.startClient(steamExe: steam.appending(path: "steam.exe"), bottle: bottle)
+            return
+        }
+    }
+
     /// Whether the bottle's Steam client is running.
     public static func isSteamRunning() async -> Bool {
         let process = Process()

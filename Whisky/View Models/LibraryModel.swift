@@ -61,6 +61,8 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var rows: [LibraryRow] = []
     @Published var launchError: String?
     @Published var toast: ToastData?
+    /// A modded game that's starting, for the launch screen.
+    @Published var launchRequest: LaunchRequest?
 
     /// App IDs with a launch in flight, per bottle.
     @Published private var steamLaunching: [URL: Set<Int>] = [:]
@@ -280,7 +282,12 @@ extension LibraryModel {
             // A game with mods: point Steam at this card's version first.
             Task {
                 do {
+                    let steamWasRunning = await SteamModLauncher.isSteamRunning()
+                    let started = Date()
                     if let copy = variant.modFolder {
+                        if let gameExe = ModInstaller.mainExecutable(in: variant.gameFolder) {
+                            SteamModLauncher.ensureLoaderOverride(gameExecutable: gameExe, bottle: bottle)
+                        }
                         try await SteamModLauncher.prepare(appId: appID, bottle: bottle)
                         let exe = ModInstaller.mainExecutable(in: copy)
                         try SteamModLauncher.select(exe, appId: appID, bottleURL: bottle.url)
@@ -288,6 +295,17 @@ extension LibraryModel {
                         try SteamModLauncher.select(nil, appId: appID, bottleURL: bottle.url)
                     }
                     orchestrator(for: bottle).launch(game)
+                    launchRequest = LaunchRequest(
+                        title: game.name,
+                        modName: variant.modName,
+                        artworkURL: row.item.artworkURL,
+                        monitor: ModLaunchMonitor(
+                            bottleURL: bottle.url, appId: appID,
+                            gameFolder: variant.modFolder ?? variant.gameFolder,
+                            modded: variant.modFolder != nil, startedAt: started
+                        ),
+                        steamWasRunning: steamWasRunning
+                    )
                 } catch {
                     launchError = error.localizedDescription
                 }

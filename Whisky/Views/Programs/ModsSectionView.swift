@@ -36,6 +36,7 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     @State private var dropTargeted = false
     @State private var activeMod: URL?
     @State private var showAddSheet = false
+    @State private var launchRequest: LaunchRequest?
     @Binding var modsChanged: Int
 
     struct PendingPlan: Identifiable {
@@ -65,6 +66,9 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
         }
         .task(id: program.url) { await refresh() }
         .sheet(isPresented: $showAddSheet) { addSheet }
+        .sheet(item: $launchRequest) { request in
+            LaunchProgressView(request: request) { launchRequest = nil }
+        }
         .sheet(item: $pendingPlan) { pending in
             planSheet(pending)
         }
@@ -509,7 +513,10 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                 do {
                     busy = modFolder == nil ? nil : "Getting Steam ready…"
                     defer { busy = nil }
+                    let steamWasRunning = await SteamModLauncher.isSteamRunning()
+                    let started = Date()
                     if let modFolder {
+                        SteamModLauncher.ensureLoaderOverride(gameExecutable: program.url, bottle: program.bottle)
                         try await SteamModLauncher.prepare(appId: appId, bottle: program.bottle)
                         try SteamModLauncher.select(
                             ModInstaller.mainExecutable(in: modFolder, preferring: program.name),
@@ -519,7 +526,10 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
                         try SteamModLauncher.select(nil, appId: appId, bottleURL: program.bottle.url)
                     }
                     try SteamLauncher.launch(appId: appId, bottle: program.bottle)
-                    message = "Starting \(modFolder == nil ? program.name : preset.name) through Steam…"
+                    message = nil
+                    launchRequest = makeLaunchRequest(
+                        preset, appId: appId, modFolder: modFolder, steamWasRunning: steamWasRunning, started: started
+                    )
                 } catch {
                     message = error.localizedDescription
                 }
@@ -545,6 +555,22 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
             message = error.localizedDescription
         }
         Task { await refresh() }
+    }
+
+    private func makeLaunchRequest(
+        _ preset: ModPreset, appId: Int, modFolder: URL?, steamWasRunning: Bool, started: Date
+    ) -> LaunchRequest {
+        let root = SteamLibrary.detectInstall(bottleURL: program.bottle.url)
+        return LaunchRequest(
+            title: program.name.replacingOccurrences(of: ".exe", with: ""),
+            modName: modFolder == nil ? nil : preset.name,
+            artworkURL: root.flatMap { SteamLibrarySource.artworkURL(appID: appId, steamRoot: $0) },
+            monitor: ModLaunchMonitor(
+                bottleURL: program.bottle.url, appId: appId,
+                gameFolder: modFolder ?? gameFolder, modded: modFolder != nil, startedAt: started
+            ),
+            steamWasRunning: steamWasRunning
+        )
     }
 
     private func isActive(_ folder: URL) -> Bool {
@@ -661,6 +687,10 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
     private func useModLoader(in result: ModInstallResult) {
         let loader = result.gameFolder.appending(path: "winhttp.dll")
         guard FileManager.default.fileExists(atPath: loader.path(percentEncoded: false)) else { return }
+        if isFrozenCopy(result.gameFolder) {
+            SteamModLauncher.ensureLoaderOverride(gameExecutable: program.url, bottle: program.bottle)
+            return
+        }
         let target = result.executable == program.url
             ? program : Program(url: result.executable, bottle: program.bottle)
         var overrides = target.settings.overrides ?? ProgramOverrides()
