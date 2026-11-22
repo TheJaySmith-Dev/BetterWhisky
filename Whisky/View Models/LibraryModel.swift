@@ -113,7 +113,11 @@ final class LibraryModel: ObservableObject {
         case let .program(url):
             programLaunching.contains(url) ? .launching : .idle
         case let .steam(appID):
-            if steamRunning[entry.bottleURL]?.contains(appID) == true {
+            // Every version of a modded game shares one App ID; only the one
+            // Steam is pointed at is the one running or launching.
+            if let mod = entry.mod, !isSelected(mod, appID: appID, bottleURL: entry.bottleURL) {
+                .idle
+            } else if steamRunning[entry.bottleURL]?.contains(appID) == true {
                 .running
             } else if steamLaunching[entry.bottleURL]?.contains(appID) == true {
                 .launching
@@ -121,6 +125,12 @@ final class LibraryModel: ObservableObject {
                 .idle
             }
         }
+    }
+
+    private func isSelected(_ mod: ModVariant, appID: Int, bottleURL: URL) -> Bool {
+        let selected = SteamModLauncher.selected(appId: appID, bottleURL: bottleURL)?
+            .deletingLastPathComponent().standardizedFileURL.path
+        return selected == mod.modFolder?.standardizedFileURL.path
     }
 
     // MARK: - Building
