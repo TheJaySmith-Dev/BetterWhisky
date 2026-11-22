@@ -102,6 +102,14 @@ public enum ModLoaderRedirect {
         try? fileManager.removeItem(at: markerURL(gameFolder))
     }
 
+    /// Whether the game's loader was set up for `modFolder`, switched on or off.
+    public static func pointsAt(_ modFolder: URL, gameFolder: URL, bottleURL: URL) -> Bool {
+        guard let data = try? Data(contentsOf: markerURL(gameFolder)),
+              let recorded = String(data: data, encoding: .utf8),
+              let wanted = windowsPath(modFolder, bottleURL: bottleURL) else { return false }
+        return recorded.lowercased() == wanted.lowercased()
+    }
+
     /// The mod folder the loader points at, when mods are switched on.
     public static func activeModFolder(gameFolder: URL, bottleURL: URL) -> URL? {
         guard let data = try? Data(contentsOf: markerURL(gameFolder)),

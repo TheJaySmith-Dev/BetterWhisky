@@ -472,10 +472,15 @@ struct ModsSectionView: View { // swiftlint:disable:this type_body_length
             let folder = folder ?? gameFolder
             try ModInstaller.uninstall(mod, from: folder)
             if folder != gameFolder, folder.deletingLastPathComponent().lastPathComponent.hasSuffix(" Mods") {
-                if activeMod?.standardizedFileURL == folder.standardizedFileURL {
+                if ModLoaderRedirect.pointsAt(folder, gameFolder: gameFolder, bottleURL: program.bottle.url) {
                     try ModLoaderRedirect.remove(gameFolder: gameFolder)
                 }
                 try? FileManager.default.removeItem(at: folder)
+                let modsRoot = folder.deletingLastPathComponent()
+                if (try? FileManager.default.contentsOfDirectory(atPath: modsRoot.path(percentEncoded: false)))?
+                    .filter({ !$0.hasPrefix(".") }).isEmpty == true {
+                    try? FileManager.default.removeItem(at: modsRoot)
+                }
             }
             message = "Removed \(mod.name)."
         } catch {

@@ -164,6 +164,8 @@ import Testing
 
         try ModLoaderRedirect.deactivate(gameFolder: game)
         #expect(ModLoaderRedirect.activeModFolder(gameFolder: game, bottleURL: bottle) == nil)
+        // Still recognised as this mod's loader when switched off, so Remove cleans it up.
+        #expect(ModLoaderRedirect.pointsAt(mod, gameFolder: game, bottleURL: bottle))
 
         try ModLoaderRedirect.remove(gameFolder: game)
         #expect(try String(contentsOf: game.appending(path: "winhttp.dll"), encoding: .utf8) == "theirs")
